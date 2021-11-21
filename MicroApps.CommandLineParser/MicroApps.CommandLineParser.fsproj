@@ -1,0 +1,19 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>netstandard2.1</TargetFramework>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Preamble.fs" />
+    <Compile Include="Console.fs" />
+    <Compile Include="Runtime.fs" />
+    <Compile Include="TranslatedField.fs" />
+    <Compile Include="Parser.fs" />
+    <Compile Include="Metadata.fs" />
+    <Compile Include="MetadataRuntime.fs" />
+    <Compile Include="Attributes.fs" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,31 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31912.275
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{F2A71F9B-5D33-465A-A702-920D77279786}") = "MicroApps.CommandLineParser", "MicroApps.CommandLineParser\MicroApps.CommandLineParser.fsproj", "{482AAC45-B0CF-4292-B3D6-D47D1516F9D8}"
+EndProject
+Project("{F2A71F9B-5D33-465A-A702-920D77279786}") = "ParserSample", "ParserSample\ParserSample.fsproj", "{FA0143C6-EC68-4FD6-AC2E-CEB8FD5F5E8E}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{482AAC45-B0CF-4292-B3D6-D47D1516F9D8}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{482AAC45-B0CF-4292-B3D6-D47D1516F9D8}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{482AAC45-B0CF-4292-B3D6-D47D1516F9D8}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{482AAC45-B0CF-4292-B3D6-D47D1516F9D8}.Release|Any CPU.Build.0 = Release|Any CPU
+		{FA0143C6-EC68-4FD6-AC2E-CEB8FD5F5E8E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{FA0143C6-EC68-4FD6-AC2E-CEB8FD5F5E8E}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{FA0143C6-EC68-4FD6-AC2E-CEB8FD5F5E8E}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{FA0143C6-EC68-4FD6-AC2E-CEB8FD5F5E8E}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {EC1F70A6-CF5E-4D61-8D68-6D6ECF29C013}
+	EndGlobalSection
+EndGlobal
