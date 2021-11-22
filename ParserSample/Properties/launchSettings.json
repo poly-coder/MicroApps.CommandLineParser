@@ -2,7 +2,7 @@
   "profiles": {
     "ParserSample": {
       "commandName": "Project",
-      "commandLineArgs": "--info new"
+      "commandLineArgs": "new"
     }
   }
 }

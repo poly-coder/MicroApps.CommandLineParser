@@ -18,7 +18,10 @@ type MultiValue =
     { minCount: int option
       maxCount: int option }
 
-type ExecuteVerbContext = { services: IServiceProvider }
+type ExecuteVerbContext =
+    { services: IServiceProvider
+      showHelp: string list -> unit
+      valueMap: Map<string, obj> }
 
 type ExecuteVerbFunc = ExecuteVerbContext -> Async<CommandLineExecuteResult>
 
@@ -61,13 +64,30 @@ and VerbDescription =
 //and GroupDescription = { arguments: CommandLineArgument list }
 
 type CommandLineMetadata =
-    { helpFlagKey: string option
+    { version: string
+      helpFlagKey: string option
       examplesFlagKey: string option
       versionFlagKey: string option
       desc: ElementDescription
       verb: VerbDescription }
 
 module Metadata =
+    let tryGetOptional<'t> key (map: Map<string, obj>) : 't option =
+        match Map.tryFind key map with
+        | None -> None
+        | Some obj ->
+            match obj with
+            | :? 't as t -> Some t
+            | value -> failwith $"Invalid type found at key '%s{key}': %A{value}"
+
+    let tryGetOptionalList<'t> key map =
+        tryGetOptional<obj list> key map
+        |> Option.map (List.map (fun o -> o :?> 't))
+
+    let tryGetOr (defaultValue: 't) key map =
+        tryGetOptional<'t> key map
+        |> Option.defaultValue defaultValue
+
     // Value Readers
 
     let readOne tryRead values =
@@ -256,7 +276,7 @@ module Metadata =
           execute = None }
 
     let defaultVerbArg verb = { verbArg verb with isDefault = true }
-    let withExecute execute d = { d with execute = execute }
+    let withExecute execute d = { d with execute = Some execute }
     let withExamples examples d = { d with examples = examples }
     let withUsages usages d = { d with usages = usages }
 
@@ -277,26 +297,32 @@ module Metadata =
     //    { g with
     //          arguments = g.arguments @ [ arg ] }
 
-    let withFlagArg longForm shortForm summary =
+    let withFlagArgAs argFn longForm shortForm summary =
         withArg (
             let desc = summarized summary
-            let arg = optional longForm
+            let arg = argFn longForm
             let opt = flagArg longForm shortForm
             CommandLineFlag(desc, arg, opt)
         )
 
-    let withLongFlagArg longForm summary =
+    let withFlagArg = withFlagArgAs optional
+    let withFlagRequiredArg = withFlagArgAs required
+
+    let withLongFlagArgAs argFn longForm summary =
         withArg (
             let desc = summarized summary
-            let arg = optional longForm
+            let arg = argFn longForm
             let opt = longFlagArg longForm
             CommandLineFlag(desc, arg, opt)
         )
 
-    let withOptionArg longForm shortForm summary reader =
+    let withLongFlagArg = withLongFlagArgAs optional
+    let withLongFlagRequiredArg = withLongFlagArgAs required
+
+    let withOptionArgAs argFn longForm shortForm summary reader =
         withArg (
             let desc = summarized summary
-            let arg = optional longForm
+            let arg = argFn longForm
 
             let opt =
                 optionArg longForm reader
@@ -305,18 +331,24 @@ module Metadata =
             CommandLineOption(desc, arg, opt)
         )
 
-    let withLongOptionArg longForm summary reader =
+    let withOptionArg = withOptionArgAs optional
+    let withOptionRequiredArg = withOptionArgAs required
+
+    let withLongOptionArgAs argFn longForm summary reader =
         withArg (
             let desc = summarized summary
-            let arg = optional longForm
+            let arg = argFn longForm
             let opt = optionArg longForm reader
             CommandLineOption(desc, arg, opt)
         )
 
-    let withOptionMultiArg longForm shortForm summary reader =
+    let withLongOptionArg = withLongOptionArgAs optional
+    let withLongOptionRequiredArg = withLongOptionArgAs required
+
+    let withOptionMultiArgAs argFn longForm shortForm summary reader =
         withArg (
             let desc = summarized summary
-            let arg = optional longForm
+            let arg = argFn longForm
 
             let opt =
                 optionArg longForm reader
@@ -326,10 +358,13 @@ module Metadata =
             CommandLineOption(desc, arg, opt)
         )
 
-    let withLongOptionMultiArg longForm summary reader =
+    let withOptionMultiArg = withOptionMultiArgAs optional
+    let withOptionMultiRequiredArg = withOptionMultiArgAs required
+
+    let withLongOptionMultiArgAs argFn longForm summary reader =
         withArg (
             let desc = summarized summary
-            let arg = optional longForm
+            let arg = argFn longForm
 
             let opt =
                 optionArg longForm reader
@@ -338,21 +373,30 @@ module Metadata =
             CommandLineOption(desc, arg, opt)
         )
 
-    let withOptionalPositionalArg priority key summary reader =
+    let withLongOptionMultiArg = withLongOptionMultiArgAs optional
+    let withLongOptionMultiRequiredArg = withLongOptionMultiArgAs required
+
+    let withOptionalPositionalArgAs argFn priority key summary reader =
         withArg (
             let desc = summarized summary
-            let arg = optional key
+            let arg = argFn key
             let pos = positionalArg priority reader
             CommandLinePositional(desc, arg, pos)
         )
 
-    let withPositionalArg priority key summary reader =
+    let withOptionalPositionalArg = withOptionalPositionalArgAs optional
+    let withOptionalPositionalRequiredArg = withOptionalPositionalArgAs required
+
+    let withPositionalArgAs argFn priority key summary reader =
         withArg (
             let desc = summarized summary
-            let arg = required key
+            let arg = argFn key
             let pos = positionalArg priority reader
             CommandLinePositional(desc, arg, pos)
         )
+
+    let withPositionalArg = withPositionalArgAs optional
+    let withPositionalRequiredArg = withPositionalArgAs required
 
     // Create Metadata Root
 
@@ -365,8 +409,9 @@ module Metadata =
     [<Literal>]
     let DefaultVersionFlagKey = "version"
 
-    let create desc verb : CommandLineMetadata =
-        { desc = desc
+    let create version desc verb : CommandLineMetadata =
+        { version = version
+          desc = desc
           verb = verb
           helpFlagKey = Some DefaultHelpFlagKey
           examplesFlagKey = Some DefaultExamplesFlagKey

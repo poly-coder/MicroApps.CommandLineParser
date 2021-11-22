@@ -10,6 +10,7 @@ type StaticCommandLineMetadataProvider(metadata) =
         member this.GetMetadata() = async.Return metadata
 
 open Console
+open System
 
 type internal ShowHelpOptions =
     { errors: string list
@@ -29,12 +30,19 @@ type internal BuildPlanError =
       valueMap: Map<string, obj> }
 
 type internal BuildPlanSuccess =
-    { argPath: CommandLineArgument list
+    { execute: ExecuteVerbFunc
+      metadata: CommandLineMetadata
+      argPath: CommandLineArgument list
       valueMap: Map<string, obj> }
 
 type internal BuildPlanResult = Result<BuildPlanSuccess, BuildPlanError>
 
-type CommandLineMetadataRuntime(metadataProvider: ICommandLineMetadataProvider, tokenizer: ICommandLineTokenizer) =
+type CommandLineMetadataRuntime
+    (
+        metadataProvider: ICommandLineMetadataProvider,
+        tokenizer: ICommandLineTokenizer,
+        serviceProvider: IServiceProvider
+    ) =
 
     let getSummaryOf desc =
         if isNotNullOrWS desc.summary then
@@ -90,47 +98,70 @@ type CommandLineMetadataRuntime(metadataProvider: ICommandLineMetadataProvider, 
                 writelnC gray desc.summary
                 writeln ""
 
-        let getUsagesTable (verbDesc: VerbDescription) =
+        let writeParentDesc (desc: ElementDescription) =
+            if isNotNullOrWS desc.name then
+                writelnC white $"%s{desc.name}"
+                writeln ""
+
+        let (|HasNoOptions|HasRequiredOptions|HasOptions|) arguments =
+            arguments
+            |> List.collect
+                (function
+                | CommandLineFlag (_, desc, _) -> [ desc.isRequired ]
+                | CommandLineOption (_, desc, _) -> [ desc.isRequired ]
+                | _ -> [])
+            |> (function
+            | [] -> HasNoOptions
+            | ls when List.exists ((=) true) ls -> HasRequiredOptions
+            | _ -> HasOptions)
+
+        let (|HasNoArguments|HasRequiredArguments|HasArguments|) arguments =
+            arguments
+            |> List.collect
+                (function
+                | CommandLinePositional (_, desc, _) -> [ desc.isRequired ]
+                | _ -> [])
+            |> (function
+            | [] -> HasNoArguments
+            | ls when List.exists ((=) true) ls -> HasRequiredArguments
+            | _ -> HasArguments)
+
+        let (|HasNoSubCommands|HasRequiredSubCommands|HasSubCommands|) verbDesc =
+            verbDesc.arguments
+            |> List.exists
+                (function
+                | CommandLineVerb _ -> true
+                //| CommandLineGroup _ -> true
+                | _ -> false)
+            |> (function
+            | true when Option.isNone verbDesc.execute -> HasRequiredSubCommands
+            | true -> HasSubCommands
+            | _ -> HasNoSubCommands)
+
+        let getUsagesTable verbChainName (verbDesc: VerbDescription) =
             let defaultUsages =
                 seq {
                     let options =
-                        verbDesc.arguments
-                        |> List.collect
-                            (function
-                            | CommandLineFlag (_, desc, _) -> [ desc.isRequired ]
-                            | CommandLineOption (_, desc, _) -> [ desc.isRequired ]
-                            | _ -> [])
-                        |> (function
-                        | [] -> ""
-                        | ls when List.exists ((=) true) ls -> " <OPTIONS>"
-                        | _ -> " [OPTIONS]")
+                        match verbDesc.arguments with
+                        | HasNoOptions -> ""
+                        | HasRequiredOptions -> " <OPTIONS>"
+                        | HasOptions -> " [OPTIONS]"
 
                     let arguments =
-                        verbDesc.arguments
-                        |> List.collect
-                            (function
-                            | CommandLinePositional (_, desc, _) -> [ desc.isRequired ]
-                            | _ -> [])
-                        |> (function
-                        | [] -> ""
-                        | ls when List.exists ((=) true) ls -> " <ARGUMENTS>"
-                        | _ -> " [ARGUMENTS]")
+                        match verbDesc.arguments with
+                        | HasNoArguments -> ""
+                        | HasRequiredArguments -> " <ARGUMENTS>"
+                        | HasArguments -> " [ARGUMENTS]"
 
                     let subCommands =
-                        verbDesc.arguments
-                        |> List.exists
-                            (function
-                            | CommandLineVerb _ -> true
-                            //| CommandLineGroup _ -> true
-                            | _ -> false)
-                        |> (function
-                        | true when Option.isNone verbDesc.execute -> " <SUB-COMMAND> ..."
-                        | true -> " [SUB-COMMAND] ..."
-                        | _ -> "")
+                        match verbDesc with
+                        | HasNoSubCommands -> ""
+                        | HasRequiredSubCommands -> " <SUB-COMMAND>"
+                        | HasSubCommands -> " [SUB-COMMAND]"
 
                     yield
                         [ "usage:"
-                          $"%s{verbDesc.verb}%s{options}%s{arguments}%s{subCommands}" ]
+                          $"%s{verbChainName}%s{options}%s{arguments}%s{subCommands}" ]
                 }
 
             let usages =
@@ -139,48 +170,55 @@ type CommandLineMetadataRuntime(metadataProvider: ICommandLineMetadataProvider, 
 
             Seq.concat [ defaultUsages; usages ] |> Seq.toList
 
-        let writeUsages verbDesc =
+        let writeUsages verbChainName verbDesc =
             let tableOptions =
                 cleanTableOptions
                 |> withColumnAlignment ColumnTextAlignment.Right 0
 
-            getUsagesTable verbDesc |> writeTable tableOptions
+            getUsagesTable verbChainName verbDesc
+            |> writeTable tableOptions
+
             writeln ""
 
+        let getMultiValuedHelp multiValued =
+            match multiValued with
+            | None -> ""
+            | Some ({ minCount = None; maxCount = None }) -> " ..."
+            | Some ({ minCount = Some minCount
+                      maxCount = None }) -> $" %d{minCount}..."
+            | Some ({ minCount = None
+                      maxCount = Some maxCount }) -> $" ...%d{maxCount}"
+            | Some ({ minCount = Some minCount
+                      maxCount = Some maxCount }) -> $" %d{minCount}...%d{maxCount}"
+
+        let getDefaultTextHelp defaultText =
+            match defaultText with
+            | Some text -> $" (Default: %s{text})"
+            | None -> ""
+
         let getPositionalArgumentsTable arguments =
-            arguments
-            |> Seq.collect
-                (function
+            let collector =
+                function
                 | CommandLinePositional (desc, argDesc, posDesc) -> [ desc, argDesc, posDesc ]
-                | _ -> [])
-            |> Seq.sortBy (fun (_, _, posDesc) -> posDesc.priority)
+                | _ -> []
+
+            let byPriority (_, _, posDesc) = posDesc.priority
+
+            arguments
+            |> Seq.collect collector
+            |> Seq.sortBy byPriority
             |> Seq.map
                 (fun (desc, argDesc, posDesc) ->
                     let key = argDesc.key
-
-                    let multiplicity =
-                        match posDesc.multiValued with
-                        | None -> ""
-                        | Some ({ minCount = None; maxCount = None }) -> " ..."
-                        | Some ({ minCount = Some minCount
-                                  maxCount = None }) -> $" %d{minCount}..."
-                        | Some ({ minCount = None
-                                  maxCount = Some maxCount }) -> $" ...%d{maxCount}"
-                        | Some ({ minCount = Some minCount
-                                  maxCount = Some maxCount }) -> $" %d{minCount}...%d{maxCount}"
-
+                    let multiplicity = getMultiValuedHelp posDesc.multiValued
                     let summary = getSummaryOf desc
-
-                    let default' =
-                        match posDesc.defaultText with
-                        | Some text -> $" (Default: %s{text})"
-                        | None -> ""
+                    let default' = getDefaultTextHelp posDesc.defaultText
 
                     [ $"%s{key}%s{multiplicity}"
                       $"%s{summary}%s{default'}" ])
             |> Seq.toList
 
-        let writePositionalArguments arguments =
+        let writePositionalArguments prefix arguments =
             let tableOptions =
                 { cleanTableOptions with
                       columnSeparator = "   "
@@ -190,7 +228,7 @@ type CommandLineMetadataRuntime(metadataProvider: ICommandLineMetadataProvider, 
             let table = getPositionalArgumentsTable arguments
 
             if table <> [] then
-                writeln $"Arguments:"
+                writeln $"%s{prefix}Arguments:"
 
             writeTable tableOptions table
 
@@ -198,10 +236,13 @@ type CommandLineMetadataRuntime(metadataProvider: ICommandLineMetadataProvider, 
 
         let getOptionArgumentsTable arguments =
             let getForms longForms shortForms =
-                List.concat [ shortForms
-                              |> List.map (fun (c: char) -> $"-%c{c}")
-                              longForms
-                              |> List.map (fun (s: string) -> $"--%s{s}") ]
+                let shortForms =
+                    Seq.map (fun (c: char) -> $"-%c{c}") shortForms
+
+                let longForms =
+                    Seq.map (fun (s: string) -> $"--%s{s}") longForms
+
+                Seq.concat [ shortForms; longForms ]
                 |> String.concat "|"
 
             let getFormatted =
@@ -220,17 +261,19 @@ type CommandLineMetadataRuntime(metadataProvider: ICommandLineMetadataProvider, 
                     forms, summary
                 | _ -> failwithf "Unexpected argument type"
 
-            arguments
-            |> Seq.collect
-                (function
+            let collector =
+                function
                 | CommandLineOption (desc, argDesc, optDesc) -> [ CommandLineOption(desc, argDesc, optDesc) ]
                 | CommandLineFlag (desc, argDesc, flagDesc) -> [ CommandLineFlag(desc, argDesc, flagDesc) ]
-                | _ -> [])
+                | _ -> []
+
+            arguments
+            |> Seq.collect collector
             |> Seq.map getFormatted
             |> Seq.map (fun (forms, summary) -> [ forms; summary ])
             |> Seq.toList
 
-        let writeOptionArguments arguments =
+        let writeOptionArguments prefix arguments =
             let tableOptions =
                 { cleanTableOptions with
                       columnSeparator = "   "
@@ -239,18 +282,21 @@ type CommandLineMetadataRuntime(metadataProvider: ICommandLineMetadataProvider, 
 
             let table = getOptionArgumentsTable arguments
 
-            if table <> [] then writeln $"Options:"
+            if table <> [] then
+                writeln $"%s{prefix}Options:"
 
             writeTable tableOptions table
 
             if table <> [] then writeln ""
 
         let getSubcommandsTable arguments =
-            arguments
-            |> Seq.collect
-                (function
+            let collector =
+                function
                 | CommandLineVerb (desc, verbDesc) -> [ desc, verbDesc ]
-                | _ -> [])
+                | _ -> []
+
+            arguments
+            |> Seq.collect collector
             |> Seq.sortBy (fun (_, v) -> v.verb)
             |> Seq.map (fun (d, v) -> [ v.verb; (getSummaryOf d) ])
             |> Seq.toList
@@ -278,17 +324,33 @@ type CommandLineMetadataRuntime(metadataProvider: ICommandLineMetadataProvider, 
                     writeln example
                     writeln ""
 
+        let verbChainName path =
+            path
+            |> Seq.collect
+                (function
+                | CommandLineVerb (_, v) -> [ v.verb ]
+                | _ -> [])
+            |> Seq.rev
+            |> String.concat " "
+
         let rec loop focused argPath =
             match argPath with
             | CommandLineVerb (desc, verbDesc) :: tail ->
-                if focused then writeFocusedDesc desc
-                //else
-                //    writeUnfocusedDesc desc
-                writeUsages verbDesc
-                writePositionalArguments verbDesc.arguments
-                writeOptionArguments verbDesc.arguments
-                writeCommandsArguments verbDesc.arguments
-                writeExamples verbDesc.examples
+                let verbChainName = verbChainName argPath
+
+                if focused then
+                    writeFocusedDesc desc
+                    writeUsages verbChainName verbDesc
+                    writePositionalArguments "" verbDesc.arguments
+                    writeOptionArguments "" verbDesc.arguments
+                else
+                    writeParentDesc desc
+                    writePositionalArguments $"%s{verbChainName} " verbDesc.arguments
+                    writeOptionArguments $"%s{verbChainName} " verbDesc.arguments
+
+                if focused then
+                    writeCommandsArguments verbDesc.arguments
+                    writeExamples verbDesc.examples
 
                 loop false tail
 
@@ -299,16 +361,14 @@ type CommandLineMetadataRuntime(metadataProvider: ICommandLineMetadataProvider, 
 
     let buildPlan metadata tokens : BuildPlanResult =
         let searchArgument localOnly notFoundMsg multipleFoundMsg getMatches argPath =
+            let findVerbCandidates arguments =
+                arguments |> Seq.collect getMatches |> Seq.toList
+
             let rec loop argPath =
                 match argPath with
                 | [] -> []
                 | CommandLineVerb (desc, verbDesc) :: argPath' ->
-                    let newCandidates =
-                        verbDesc.arguments
-                        |> Seq.collect getMatches
-                        |> Seq.toList
-
-                    match newCandidates with
+                    match findVerbCandidates verbDesc.arguments with
                     | [] -> if localOnly then [] else loop argPath'
                     | candidates -> candidates
                 | other :: _ -> failwith $"Unexpected element %A{other}"
@@ -320,26 +380,30 @@ type CommandLineMetadataRuntime(metadataProvider: ICommandLineMetadataProvider, 
                 | _ -> Error [ multipleFoundMsg ]
 
         let searchShortForm char =
+            let containsForm = List.contains char
+
             searchArgument
                 false
                 $"Short option '-%c{char}' not found"
                 $"Multiple arguments use short option '-%c{char}'"
                 (function
-                | CommandLineFlag (desc, argDesc, flagDesc) when flagDesc.shortForms |> List.contains char ->
+                | CommandLineFlag (desc, argDesc, flagDesc) when containsForm flagDesc.shortForms ->
                     [ CommandLineFlag(desc, argDesc, flagDesc) ]
-                | CommandLineOption (desc, argDesc, optDesc) when optDesc.shortForms |> List.contains char ->
+                | CommandLineOption (desc, argDesc, optDesc) when containsForm optDesc.shortForms ->
                     [ CommandLineOption(desc, argDesc, optDesc) ]
                 | _ -> [])
 
         let searchLongForm str =
+            let containsForm = List.contains str
+
             searchArgument
                 false
                 $"Long option '--%s{str}' not found"
                 $"Multiple arguments use long option '--%s{str}'"
                 (function
-                | CommandLineFlag (desc, argDesc, flagDesc) when flagDesc.longForms |> List.contains str ->
+                | CommandLineFlag (desc, argDesc, flagDesc) when containsForm flagDesc.longForms ->
                     [ CommandLineFlag(desc, argDesc, flagDesc) ]
-                | CommandLineOption (desc, argDesc, optDesc) when optDesc.longForms |> List.contains str ->
+                | CommandLineOption (desc, argDesc, optDesc) when containsForm optDesc.longForms ->
                     [ CommandLineOption(desc, argDesc, optDesc) ]
                 | _ -> [])
 
@@ -353,14 +417,122 @@ type CommandLineMetadataRuntime(metadataProvider: ICommandLineMetadataProvider, 
                 | _ -> [])
 
         let fillDefaultValues argPath valueMap =
-            // TODO: Fill value map with default values from argPath on missing keys
-            let rec loop argPath valueMap = valueMap
-            loop argPath valueMap
+            let rec loopArgs arguments (valueMap: Map<string, obj>) =
+                match arguments with
+                | [] -> valueMap
 
-        let searchInvalidConstraints argPath valueMap =
-            // TODO: Search required options/arguments on argPath from valueMap
-            // TODO: Search multi-valued options/arguments have min/max count ok
-            []
+                | CommandLineFlag (_, argDesc, _) :: tail ->
+                    valueMap
+                    |> Map.update
+                        argDesc.key
+                        (function
+                        | Some v -> Some v
+                        | None -> Some false)
+                    |> loopArgs tail
+
+                | CommandLineOption (_, argDesc, optDesc) :: tail ->
+                    match optDesc.defaultValue with
+                    | Some value ->
+                        valueMap
+                        |> Map.update
+                            argDesc.key
+                            (function
+                            | Some v -> Some v
+                            | None -> Some value)
+                    | None -> valueMap
+                    |> loopArgs tail
+
+                | CommandLinePositional (_, argDesc, posDesc) :: tail ->
+                    match posDesc.defaultValue with
+                    | Some value ->
+                        valueMap
+                        |> Map.update
+                            argDesc.key
+                            (function
+                            | Some v -> Some v
+                            | None -> Some value)
+                    | None -> valueMap
+                    |> loopArgs tail
+
+                | _ :: tail -> loopArgs tail valueMap
+
+            let rec loopPath argPath valueMap =
+                match argPath with
+                | [] -> valueMap
+                | CommandLineVerb (desc, verbDesc) :: tail ->
+                    valueMap
+                    |> loopArgs verbDesc.arguments
+                    |> loopPath tail
+                | other :: _ -> failwith $"Unexpected element: %A{other}"
+
+            loopPath argPath valueMap
+
+        let checkMultiValued prefix multiValued (value: obj) =
+            match multiValued with
+            | None -> []
+            | Some constraints ->
+                match value with
+                | :? (list<obj>) as values ->
+                    [ let count = List.length values
+
+                      match constraints.minCount with
+                      | Some minCount when count < minCount ->
+                          yield
+                              $"%s{prefix} was expected to have at least %i{minCount} elements, but %i{count} were found"
+                      | _ -> ()
+
+                      match constraints.maxCount with
+                      | Some maxCount when count < maxCount ->
+                          yield
+                              $"%s{prefix} was expected to have at most %i{maxCount} elements, but %i{count} were found"
+                      | _ -> () ]
+                | other -> failwith $"Unexpected element %A{other}"
+
+        let searchInvalidConstraints argPath (valueMap: Map<string, obj>) =
+            let rec loopArgs arguments errors =
+                match arguments with
+                | [] -> errors
+
+                | CommandLineOption (_, argDesc, optDesc) :: tail ->
+                    match argDesc.isRequired with
+                    | true ->
+                        let form = getFormOfOption argDesc optDesc
+
+                        match valueMap |> Map.tryFind argDesc.key with
+                        | Some value ->
+                            value
+                            |> checkMultiValued $"Option %s{form}" optDesc.multiValued
+                            |> (fun es -> es @ errors)
+                        | None -> $"Missing required option %s{form}" :: errors
+                        |> loopArgs tail
+                    | false -> loopArgs tail errors
+
+                | CommandLinePositional (_, argDesc, posDesc) :: tail ->
+                    match argDesc.isRequired with
+                    | true ->
+                        match valueMap |> Map.tryFind argDesc.key with
+                        | Some value ->
+                            value
+                            |> checkMultiValued $"Argument %s{argDesc.key}" posDesc.multiValued
+                            |> (fun es -> es @ errors)
+                        | None ->
+                            $"Missing required option %s{argDesc.key}"
+                            :: errors
+                        |> loopArgs tail
+                    | false -> loopArgs tail errors
+
+                | _ :: tail -> loopArgs tail errors
+
+            let rec loopPath argPath errors =
+                match argPath with
+                | [] -> List.rev errors
+                | CommandLineVerb (desc, verbDesc) :: tail ->
+                    errors
+                    |> loopArgs verbDesc.arguments
+                    |> loopPath tail
+                | other :: _ -> failwith $"Unexpected element: %A{other}"
+
+            loopPath argPath []
 
         let rec loop (state: BuildPlanState) =
             let asError errors valueMap =
@@ -369,37 +541,44 @@ type CommandLineMetadataRuntime(metadataProvider: ICommandLineMetadataProvider, 
                       argPath = state.argPath
                       valueMap = valueMap }
 
-            let asOk valueMap =
+            let asOk execute valueMap =
                 Ok
-                    { argPath = state.argPath
+                    { execute = execute
+                      argPath = state.argPath
+                      metadata = metadata
                       valueMap = valueMap }
 
+            let nonExecutableError verbDesc =
+                let subcommands =
+                    getSubCommandVerbs verbDesc.arguments
+                    |> String.concat ", "
+
+                let error =
+                    $"Command %s{verbDesc.verb} is not executable. "
+                    + $"Try one of the sub-commands: %s{subcommands}"
+
+                asError [ error ] state.valueMap
+
+            let asExecutableCommand verbDesc =
+                let valueMap =
+                    fillDefaultValues state.argPath state.valueMap
+
+                match searchInvalidConstraints state.argPath valueMap with
+                | [] -> // When all required options are fulfilled
+                    asOk verbDesc valueMap
+                | errors -> // When some required options are missing
+                    asError errors valueMap
+
             match state.tokens with
-            | [] -> // Whene there are no more tokens to proecss
+            | [] -> // When there are no more tokens to proecss
                 match state.errors with
                 | [] -> // When there are no errors from looking up for tokens in metadata
                     match state.argPath with
                     | CommandLineVerb (_, verbDesc) :: _ ->
                         match verbDesc.execute with
                         | None -> // When selected verb is not executable
-                            let subcommands =
-                                getSubCommandVerbs verbDesc.arguments
-                                |> String.concat ", "
-
-                            let error =
-                                $"Command %s{verbDesc.verb} is not executable. "
-                                + $"Try one of the sub-commands: %s{subcommands}"
-
-                            asError [ error ] state.valueMap
-                        | Some _ ->
-                            let valueMap =
-                                fillDefaultValues state.argPath state.valueMap
-
-                            match searchInvalidConstraints state.argPath valueMap with
-                            | [] -> // When all required options are fulfilled
-                                asOk valueMap
-                            | errors -> // When some required options are missing
-                                asError errors valueMap
+                            nonExecutableError verbDesc
+                        | Some execute -> asExecutableCommand execute
 
                     | other :: _ -> failwith $"Unexpected element %A{other}"
                     | [] -> failwith $"Unexpected empty list"
@@ -408,28 +587,29 @@ type CommandLineMetadataRuntime(metadataProvider: ICommandLineMetadataProvider, 
                     asError (List.rev errors) state.valueMap
 
             | token :: tokens' ->
+                let withErrors errors =
+                    { state with
+                          errors = errors @ state.errors
+                          tokens = tokens' }
+
+                let withValuesAndTokens valueMap tokens' =
+                    { state with
+                          valueMap = valueMap
+                          tokens = tokens' }
+
+                let withValues valueMap = withValuesAndTokens valueMap tokens'
+
                 let ofFlagOrOptionResult result =
                     match result with
-                    | Error errors ->
-                        { state with
-                              errors = errors @ state.errors
-                              tokens = tokens' }
+                    | Error errors -> withErrors errors
 
                     | Ok (CommandLineFlag (desc, argDesc, flagDesc)) ->
                         match Map.tryFind argDesc.key state.valueMap with
                         | Some value ->
                             let form = getFormOfFlag argDesc flagDesc
 
-                            let error =
-                                $"Flag '%s{form}' was found multiple times"
-
-                            { state with
-                                  errors = error :: state.errors
-                                  tokens = tokens' }
-                        | None ->
-                            { state with
-                                  tokens = tokens'
-                                  valueMap = state.valueMap |> Map.add argDesc.key true }
+                            withErrors [ $"Flag '%s{form}' was found multiple times" ]
+                        | None -> withValues (state.valueMap |> Map.add argDesc.key true)
 
                     | Ok (CommandLineOption (desc, argDesc, optDesc)) ->
                         let readOptionValue () =
@@ -439,11 +619,9 @@ type CommandLineMetadataRuntime(metadataProvider: ICommandLineMetadataProvider, 
                                     let form = getFormOfOption argDesc optDesc
                                     failwith $"Token count cannot be negative in {form}"
                                 | tokens', 0 ->
-                                    let inputs = List.rev inputs
-
-                                    match optDesc.reader.read inputs with
-                                    | Error error -> Error [ error ]
-                                    | Ok value -> Ok(value, tokens')
+                                    optDesc.reader.read (List.rev inputs)
+                                    |> Result.map (fun value -> value, tokens')
+                                    |> Result.mapError List.singleton
                                 | [], n ->
                                     let form = getFormOfOption argDesc optDesc
                                     Error [ $"Expecting %i{n} additional parameters but no more arguments were given, reading {form}" ]
@@ -459,27 +637,15 @@ type CommandLineMetadataRuntime(metadataProvider: ICommandLineMetadataProvider, 
 
                         let accumulateValue accumFn =
                             match readOptionValue () with
-                            | Error errors ->
-                                { state with
-                                      errors = errors @ state.errors
-                                      tokens = tokens' }
+                            | Error errors -> withErrors errors
                             | Ok (value, tokens') ->
                                 let value' = accumFn value
-
-                                { state with
-                                      tokens = tokens'
-                                      valueMap = state.valueMap |> Map.add argDesc.key value' }
+                                withValuesAndTokens (state.valueMap |> Map.add argDesc.key value') tokens'
 
                         match Map.tryFind argDesc.key state.valueMap, optDesc.multiValued with
                         | Some _, None -> // When existing value and single-valued option
                             let form = getFormOfOption argDesc optDesc
-
-                            let error =
-                                $"Option '%s{form}' was found multiple times"
-
-                            { state with
-                                  errors = error :: state.errors
-                                  tokens = tokens' }
+                            withErrors [ $"Option '%s{form}' was found multiple times" ]
                         | None, None -> // When single-valued option
                             accumulateValue id
                         | Some value, Some _ -> // When existing values and multi-valued option
@@ -522,7 +688,26 @@ type CommandLineMetadataRuntime(metadataProvider: ICommandLineMetadataProvider, 
               valueMap = Map.empty
               tokens = tokens }
 
-    let executePlan plan = async { return { exitCode = 0 } }
+    let executePlan (plan: BuildPlanSuccess) =
+        async {
+            let context: ExecuteVerbContext =
+                { services = serviceProvider
+                  showHelp =
+                      fun errors ->
+                          showHelp
+                              { errors = errors
+                                showExamples = false
+                                metadata = plan.metadata
+                                argPath = plan.argPath }
+                  valueMap = plan.valueMap }
+
+            try
+                return! plan.execute context
+            with
+            | exn ->
+                writelnC red $"%O{exn}"
+                return { exitCode = 1 }
+        }
 
     let execute (context: CommandLineExecuteContext) =
         async {
@@ -541,31 +726,47 @@ type CommandLineMetadataRuntime(metadataProvider: ICommandLineMetadataProvider, 
             | Ok tokens ->
                 let executionPlan = buildPlan metadata tokens
 
+                let getBoolKey optKey valueMap =
+                    optKey
+                    |> Option.map (fun key -> valueMap |> Metadata.tryGetOr false key)
+                    |> Option.defaultValue false
+
                 match executionPlan with
                 | Error error ->
-                    let showExamples =
-                        match metadata.examplesFlagKey with
-                        | None -> false
-                        | Some key ->
-                            error.valueMap
-                            |> Map.tryFind key
-                            |> Option.bind
-                                (function
-                                | :? bool as b -> Some b
-                                | _ -> None)
-                            |> Option.defaultValue false
+                    let examplesFlag =
+                        getBoolKey metadata.examplesFlagKey error.valueMap
 
                     showHelp
                         { errors = error.errors
-                          showExamples = showExamples
+                          showExamples = examplesFlag
                           metadata = metadata
                           argPath = error.argPath }
 
                     return { exitCode = 1 }
                 | Ok plan ->
-                    printfn "PLAN: %A" plan
-                    let! result = executePlan plan
-                    return result
+                    let versionFlag =
+                        getBoolKey metadata.versionFlagKey plan.valueMap
+
+                    if versionFlag then
+                        writeln metadata.version
+                        return { exitCode = 0 }
+                    else
+                        let helpFlag =
+                            getBoolKey metadata.helpFlagKey plan.valueMap
+
+                        if helpFlag then
+                            let examplesFlag =
+                                getBoolKey metadata.examplesFlagKey plan.valueMap
+
+                            showHelp
+                                { errors = []
+                                  showExamples = examplesFlag
+                                  metadata = metadata
+                                  argPath = plan.argPath }
+
+                            return { exitCode = 0 }
+                        else
+                            return! executePlan plan
         }
 
     interface ICommandLineRuntime with

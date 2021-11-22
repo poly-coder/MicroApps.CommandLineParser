@@ -1,6 +1,7 @@
 ﻿open System
 open Microsoft.Extensions.DependencyInjection
 open MicroApps.CommandLineParser
+open Console
 
 type RollForwardSetting =
     | LatestPatch = 1
@@ -10,9 +11,22 @@ type RollForwardSetting =
     | LatestMajor = 5
     | Disable = 6
 
+type IrisRepo() =
+    member this.Clone() = ()
+
+type IrisCLI() =
+    
+    class end
+
 let sampleMetadata =
     let newArg =
         let desc = Metadata.summarized "Create a new .NET project or file."
+
+        let executeNew context = async {
+            writelnC green "RUNNING DOTNET NEW"
+            return { exitCode = 1 }
+        }
+
         let verb =
             Metadata.verbArg "new"
             |> Metadata.withOptionArg "list" 'l' 
@@ -21,7 +35,7 @@ let sampleMetadata =
             |> Metadata.withOptionArg "name" 'n' 
                 "The name for the output being created. If no name is specified, the name of the output directory is used."
                 Metadata.stringReader
-            |> Metadata.withOptionArg "output" 'o' 
+            |> Metadata.withOptionRequiredArg "output" 'o' 
                 "Location to place the generated output."
                 (Metadata.namedStringReader "folder")
             |> Metadata.withOptionArg "install" 'i' 
@@ -38,8 +52,9 @@ let sampleMetadata =
                     let opt =
                         Metadata.optionArg "add-source" (Metadata.namedStringReader "source")
                         |> Metadata.withOptionMultiValued Metadata.multiValued
-                    CommandLineOption(desc, arg, opt)
-                )
+                    CommandLineOption(desc, arg, opt))
+            |> Metadata.withExecute executeNew
+
         CommandLineVerb(desc, verb)
 
     let dotnetDesc, dotnetVerb =
@@ -73,7 +88,7 @@ let sampleMetadata =
                 "Path to <application>.runtimeconfig.json file."
                 Metadata.existingFilePathReader
             |> Metadata.withFlagArg "diagnostics" 'd' "Enable diagnostic output."
-            |> Metadata.withLongFlagArg "info" "Display .NET information."
+            |> Metadata.withLongFlagRequiredArg "info" "Display .NET information."
             |> Metadata.withLongFlagArg "list-runtimes" "Display the installed runtimes."
             |> Metadata.withLongFlagArg "list-sdks" "Display the installed SDKs."
             |> Metadata.withHelpArg
@@ -83,7 +98,7 @@ let sampleMetadata =
 
         desc, verb
 
-    Metadata.create dotnetDesc dotnetVerb
+    Metadata.create "6.0.100" dotnetDesc dotnetVerb
 
 [<EntryPoint>]
 let main argv =
