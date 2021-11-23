@@ -9,7 +9,7 @@ type ValueReader =
       typeName: string
       read: string list -> Result<obj, string> }
 
-type ElementDescription =
+type ElementDesc =
     { name: string
       summary: string
       description: string }
@@ -25,51 +25,51 @@ type ExecuteVerbContext =
 
 type ExecuteVerbFunc = ExecuteVerbContext -> Async<CommandLineExecuteResult>
 
-type ArgumentDescription = { key: string; isRequired: bool }
+type GroupDesc =
+    { desc: ElementDesc
+      usages: string list
+      showDefaultUsage: bool
+      flags: FlagDesc list
+      options: OptionDesc list
+      arguments: ArgumentDesc list
+      verbs: VerbDesc list
+      examples: string list }
 
-type CommandLineArgument =
-    | CommandLineFlag of ElementDescription * ArgumentDescription * FlagDescription
-    | CommandLineOption of ElementDescription * ArgumentDescription * OptionDescription
-    | CommandLinePositional of ElementDescription * ArgumentDescription * PositionalDescription
-    | CommandLineVerb of ElementDescription * VerbDescription
-//| CommandLineGroup of ElementDescription * GroupDescription
-
-and FlagDescription =
-    { shortForms: char list
+and FlagDesc =
+    { key: string
+      desc: ElementDesc
+      shortForms: char list
       longForms: string list }
 
-and OptionDescription =
-    { multiValued: MultiValue option
+and OptionDesc =
+    { key: string
+      isRequired: bool
+      desc: ElementDesc
       shortForms: char list
       longForms: string list
-      defaultText: string option
-      defaultValue: obj option
+      multiValued: MultiValue option
+      defaultValue: (obj * string) option
       reader: ValueReader }
 
-and PositionalDescription =
-    { multiValued: MultiValue option
-      priority: int
-      defaultText: string option
-      defaultValue: obj option
+and ArgumentDesc =
+    { key: string
+      isRequired: bool
+      desc: ElementDesc
+      multiValued: MultiValue option
+      defaultValue: (obj * string) option
       reader: ValueReader }
 
-and VerbDescription =
-    { verb: string
-      arguments: CommandLineArgument list
-      isDefault: bool
-      examples: string list
-      usages: string list
+and VerbDesc =
+    { key: string
+      groups: GroupDesc list
       execute: ExecuteVerbFunc option }
-
-//and GroupDescription = { arguments: CommandLineArgument list }
 
 type CommandLineMetadata =
     { version: string
       helpFlagKey: string option
-      examplesFlagKey: string option
+      detailedHelpFlagKey: string option
       versionFlagKey: string option
-      desc: ElementDescription
-      verb: VerbDescription }
+      verb: VerbDesc }
 
 module Metadata =
     let tryGetOptional<'t> key (map: Map<string, obj>) : 't option =
@@ -108,7 +108,7 @@ module Metadata =
 
     let stringReader: ValueReader =
         { tokenCount = 1
-          typeName = "<string>"
+          typeName = "string"
           read = readOne Ok }
 
     let namedStringReader typeName =
@@ -160,21 +160,19 @@ module Metadata =
 
         tryParseReader "local-file" tryParse
 
-    let enumReader<'enum when 'enum: struct and 'enum: (new : unit -> 'enum) and 'enum :> System.Enum> typeName =
+    let enumReader<'enum when 'enum: struct and 'enum: (new: unit -> 'enum) and 'enum :> System.Enum> typeName =
         tryParseReader typeName System.Enum.TryParse<'enum>
 
-    // ElementDescription
+    // ElementDesc
 
-    let elementDescription: ElementDescription =
+    let elementDesc: ElementDesc =
         { name = ""
           summary = ""
           description = "" }
 
-    let named name = { elementDescription with name = name }
+    let named name = { elementDesc with name = name }
 
-    let summarized summary =
-        { elementDescription with
-              summary = summary }
+    let summarized summary = { elementDesc with summary = summary }
 
     let withName name d = { d with name = name }
     let withSummary summary d = { d with summary = summary }
@@ -197,206 +195,152 @@ module Metadata =
               maxCount = Some max }
         )
 
-    // ArgumentDescription
+    // GroupDesc
 
-    let optional key = { key = key; isRequired = false }
-    let required key = { key = key; isRequired = true }
-
-    // FlagDescription
-
-    let longFlagArg longForm : FlagDescription =
-        { shortForms = []
-          longForms = [ longForm ] }
-
-    let shortFlagArg shortForm : FlagDescription =
-        { shortForms = [ shortForm ]
-          longForms = [] }
-
-    let flagArg longForm shortForm : FlagDescription =
-        { shortForms = [ shortForm ]
-          longForms = [ longForm ] }
-
-    let withLongFlag longForm f : FlagDescription =
-        { f with
-              longForms = f.longForms @ [ longForm ] }
-
-    let withShortFlag shortForm f : FlagDescription =
-        { f with
-              shortForms = f.shortForms @ [ shortForm ] }
-
-    // OptionDescription
-
-    let optionArg longForm reader : OptionDescription =
-        { shortForms = []
-          longForms = [ longForm ]
-          multiValued = None
-          defaultText = None
-          defaultValue = None
-          reader = reader }
-
-    let withLongOption longForm d : OptionDescription =
-        { d with
-              longForms = d.longForms @ [ longForm ] }
-
-    let withShortOption shortForm d : OptionDescription =
-        { d with
-              shortForms = d.shortForms @ [ shortForm ] }
-
-    let withOptionMultiValued multiValued d : OptionDescription = { d with multiValued = multiValued }
-
-    let withOptionDefault text value d : OptionDescription =
-        { d with
-              defaultText = Some text
-              defaultValue = Some value }
-
-    // PositionalDescription
-
-    let positionalArg priority reader : PositionalDescription =
-        { priority = priority
-          multiValued = None
-          defaultText = None
-          defaultValue = None
-          reader = reader }
-
-    let withPositionalMultiValued multiValued d : PositionalDescription = { d with multiValued = multiValued }
-
-    let withPositionalDefault text value d : PositionalDescription =
-        { d with
-              defaultText = Some text
-              defaultValue = Some value }
-
-    // VerbDescription
-
-    let verbArg verb =
-        { verb = verb
-          isDefault = false
-          arguments = []
-          examples = []
+    let group: GroupDesc =
+        { desc = elementDesc
           usages = []
-          execute = None }
+          showDefaultUsage = false
+          flags = []
+          options = []
+          arguments = []
+          verbs = []
+          examples = [] }
 
-    let defaultVerbArg verb = { verbArg verb with isDefault = true }
-    let withExecute execute d = { d with execute = Some execute }
-    let withExamples examples d = { d with examples = examples }
-    let withUsages usages d = { d with usages = usages }
+    let withGroupName name d : GroupDesc =
+        { d with
+              desc = { d.desc with name = name } }
+
+    let withGroupSummary summary d : GroupDesc =
+        { d with
+              desc = { d.desc with summary = summary } }
+
+    let withGroupDescription description d : GroupDesc =
+        { d with
+              desc =
+                  { d.desc with
+                        description = description } }
+
+    let withUsage usage d =
+        { d with usages = d.usages @ [ usage ] }
+
+    let withDefaultUsage d =
+        { d with showDefaultUsage = true }
 
     let withExample example d =
         { d with
               examples = d.examples @ [ example ] }
 
-    let withUsage usage d =
-        { d with usages = d.usages @ [ usage ] }
+    let withFlag flag d = { d with flags = d.flags @ [ flag ] }
 
-    let withArg arg g : VerbDescription =
-        { g with
-              arguments = g.arguments @ [ arg ] }
+    let withOption option d =
+        { d with
+              options = d.options @ [ option ] }
 
-    //let groupArg: GroupDescription = { arguments = [] }
+    let withArgument argument d =
+        { d with
+              arguments = d.arguments @ [ argument ] }
 
-    //let withGroupArg arg g : GroupDescription =
-    //    { g with
-    //          arguments = g.arguments @ [ arg ] }
+    let withVerb verb d = { d with verbs = d.verbs @ [ verb ] }
 
-    let withFlagArgAs argFn longForm shortForm summary =
-        withArg (
-            let desc = summarized summary
-            let arg = argFn longForm
-            let opt = flagArg longForm shortForm
-            CommandLineFlag(desc, arg, opt)
-        )
+    // FlagDesc
 
-    let withFlagArg = withFlagArgAs optional
-    let withFlagRequiredArg = withFlagArgAs required
+    let flag longForm shortForm summary : FlagDesc =
+        { key = longForm
+          desc = summarized summary
+          shortForms = [ shortForm ]
+          longForms = [ longForm ] }
 
-    let withLongFlagArgAs argFn longForm summary =
-        withArg (
-            let desc = summarized summary
-            let arg = argFn longForm
-            let opt = longFlagArg longForm
-            CommandLineFlag(desc, arg, opt)
-        )
+    let longFlag longForm summary : FlagDesc =
+        { key = longForm
+          desc = summarized summary
+          shortForms = []
+          longForms = [ longForm ] }
 
-    let withLongFlagArg = withLongFlagArgAs optional
-    let withLongFlagRequiredArg = withLongFlagArgAs required
+    let withKeyFlag key f : FlagDesc = { f with key = key }
 
-    let withOptionArgAs argFn longForm shortForm summary reader =
-        withArg (
-            let desc = summarized summary
-            let arg = argFn longForm
+    let withLongFlag longForm f : FlagDesc =
+        { f with
+              longForms = f.longForms @ [ longForm ] }
 
-            let opt =
-                optionArg longForm reader
-                |> withShortOption shortForm
+    let withShortFlag shortForm f : FlagDesc =
+        { f with
+              shortForms = f.shortForms @ [ shortForm ] }
 
-            CommandLineOption(desc, arg, opt)
-        )
+    // OptionDesc
 
-    let withOptionArg = withOptionArgAs optional
-    let withOptionRequiredArg = withOptionArgAs required
+    let option longForm shortForm reader summary : OptionDesc =
+        { key = longForm
+          isRequired = false
+          desc = summarized summary
+          shortForms = [ shortForm ]
+          longForms = [ longForm ]
+          multiValued = None
+          defaultValue = None
+          reader = reader }
 
-    let withLongOptionArgAs argFn longForm summary reader =
-        withArg (
-            let desc = summarized summary
-            let arg = argFn longForm
-            let opt = optionArg longForm reader
-            CommandLineOption(desc, arg, opt)
-        )
+    let longOption longForm reader summary : OptionDesc =
+        { key = longForm
+          isRequired = false
+          desc = summarized summary
+          shortForms = []
+          longForms = [ longForm ]
+          multiValued = None
+          defaultValue = None
+          reader = reader }
 
-    let withLongOptionArg = withLongOptionArgAs optional
-    let withLongOptionRequiredArg = withLongOptionArgAs required
+    let withKeyOption key f : OptionDesc = { f with key = key }
 
-    let withOptionMultiArgAs argFn longForm shortForm summary reader =
-        withArg (
-            let desc = summarized summary
-            let arg = argFn longForm
+    let asRequiredOption d : OptionDesc = { d with isRequired = true }
 
-            let opt =
-                optionArg longForm reader
-                |> withShortOption shortForm
-                |> withOptionMultiValued multiValued
+    let withLongOption longForm d : OptionDesc =
+        { d with
+              longForms = d.longForms @ [ longForm ] }
 
-            CommandLineOption(desc, arg, opt)
-        )
+    let withShortOption shortForm d : OptionDesc =
+        { d with
+              shortForms = d.shortForms @ [ shortForm ] }
 
-    let withOptionMultiArg = withOptionMultiArgAs optional
-    let withOptionMultiRequiredArg = withOptionMultiArgAs required
+    let withOptionMultiValued multiValued d : OptionDesc = { d with multiValued = multiValued }
 
-    let withLongOptionMultiArgAs argFn longForm summary reader =
-        withArg (
-            let desc = summarized summary
-            let arg = argFn longForm
+    let withOptionDefault text value d : OptionDesc =
+        { d with
+              defaultValue = Some(value, text) }
 
-            let opt =
-                optionArg longForm reader
-                |> withOptionMultiValued multiValued
+    let withOptionDefaultValue value = withOptionDefault (string value) value
 
-            CommandLineOption(desc, arg, opt)
-        )
+    // ArgumentDesc
 
-    let withLongOptionMultiArg = withLongOptionMultiArgAs optional
-    let withLongOptionMultiRequiredArg = withLongOptionMultiArgAs required
+    let argument key reader summary : ArgumentDesc =
+        { key = key
+          isRequired = false
+          desc = summarized summary
+          multiValued = None
+          defaultValue = None
+          reader = reader }
 
-    let withOptionalPositionalArgAs argFn priority key summary reader =
-        withArg (
-            let desc = summarized summary
-            let arg = argFn key
-            let pos = positionalArg priority reader
-            CommandLinePositional(desc, arg, pos)
-        )
+    let asRequiredArgument d : ArgumentDesc = { d with isRequired = true }
 
-    let withOptionalPositionalArg = withOptionalPositionalArgAs optional
-    let withOptionalPositionalRequiredArg = withOptionalPositionalArgAs required
+    let withArgumentMultiValued multiValued d : ArgumentDesc = { d with multiValued = multiValued }
 
-    let withPositionalArgAs argFn priority key summary reader =
-        withArg (
-            let desc = summarized summary
-            let arg = argFn key
-            let pos = positionalArg priority reader
-            CommandLinePositional(desc, arg, pos)
-        )
+    let withArgumentDefault text value d : ArgumentDesc =
+        { d with
+              defaultValue = Some(value, text) }
 
-    let withPositionalArg = withPositionalArgAs optional
-    let withPositionalRequiredArg = withPositionalArgAs required
+    let withArgumentDefaultValue value =
+        withArgumentDefault (string value) value
+
+    // VerbDesc
+
+    let verb key : VerbDesc =
+        { key = key
+          execute = None
+          groups = [] }
+
+    let withExecute execute d = { d with execute = Some execute }
+
+    let withGroup group d : VerbDesc =
+        { d with groups = d.groups @ [ group ] }
 
     // Create Metadata Root
 
@@ -404,52 +348,31 @@ module Metadata =
     let DefaultHelpFlagKey = "help"
 
     [<Literal>]
-    let DefaultExamplesFlagKey = "examples"
+    let DefaultDetailedHelpFlagKey = "detailed-help"
 
     [<Literal>]
     let DefaultVersionFlagKey = "version"
 
-    let create version desc verb : CommandLineMetadata =
+    let create version verb : CommandLineMetadata =
         { version = version
-          desc = desc
           verb = verb
           helpFlagKey = Some DefaultHelpFlagKey
-          examplesFlagKey = Some DefaultExamplesFlagKey
+          detailedHelpFlagKey = Some DefaultDetailedHelpFlagKey
           versionFlagKey = Some DefaultVersionFlagKey }
 
     // Common options
 
-    let helpArg =
-        let desc =
-            elementDescription |> withSummary "Display help."
+    let helpFlag =
+        flag DefaultHelpFlagKey 'h' "Display help."
 
-        let argDesc = required DefaultHelpFlagKey
-        let flagDesc = flagArg "help" 'h'
+    let withHelpFlag = withFlag helpFlag
 
-        CommandLineFlag(desc, argDesc, flagDesc)
+    let detailedHelpFlag =
+        longFlag DefaultDetailedHelpFlagKey "Display detailed help, with descriptions and examples."
 
-    let withHelpArg = withArg helpArg
+    let withDetailedHelpFlag = withFlag detailedHelpFlag
 
-    let versionArg =
-        let desc =
-            elementDescription
-            |> withSummary "Display tool version."
+    let versionFlag =
+        longFlag DefaultVersionFlagKey "Display tool version."
 
-        let argDesc = required DefaultVersionFlagKey
-        let flagDesc = longFlagArg "version"
-
-        CommandLineFlag(desc, argDesc, flagDesc)
-
-    let withVersionArg = withArg versionArg
-
-    let examplesArg =
-        let desc =
-            elementDescription
-            |> withSummary "Print examples when showing command's help."
-
-        let argDesc = required DefaultExamplesFlagKey
-        let flagDesc = longFlagArg "examples"
-
-        CommandLineFlag(desc, argDesc, flagDesc)
-
-    let withExamplesArg = withArg examplesArg
+    let withVersionFlag = withFlag versionFlag
