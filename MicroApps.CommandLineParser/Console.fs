@@ -43,9 +43,13 @@ type ColumnTextAlignment =
 
 type WriteTableColumnOptions =
     { alignment: ColumnTextAlignment option
-      minWidth: int option }
+      minWidth: int option
+      separator: string option }
 
-let columnOptions = { alignment = None; minWidth = None }
+let columns =
+    { alignment = None
+      minWidth = None
+      separator = None }
 
 let withAlignment alignment options =
     { options with
@@ -59,56 +63,62 @@ let withMinWidth minWidth options =
 
 let withInheritedMinWidth options = { options with minWidth = None }
 
+let withSeparator separator options =
+    { options with
+          separator = Some separator }
+
+let withInheritedSeparator options = { options with separator = None }
+
 type WriteTableOptions =
-    { columnSeparator: string
-      columnSeparatorStart: string
-      columnSeparatorEnd: string
-      defaultAlignment: ColumnTextAlignment
-      defaultMinWidth: int
-      columnOptions: Map<int, WriteTableColumnOptions> }
+    { separator: string
+      separatorStart: string
+      separatorEnd: string
+      alignment: ColumnTextAlignment
+      minWidth: int
+      columns: Map<int, WriteTableColumnOptions> }
 
 let markdownTableOptions =
-    { columnSeparator = " | "
-      columnSeparatorStart = "| "
-      columnSeparatorEnd = " |"
-      defaultAlignment = ColumnTextAlignment.Left
-      defaultMinWidth = 0
-      columnOptions = Map.empty }
+    { separator = " | "
+      separatorStart = "| "
+      separatorEnd = " |"
+      alignment = ColumnTextAlignment.Left
+      minWidth = 0
+      columns = Map.empty }
 
 let cleanTableOptions =
-    { columnSeparator = " "
-      columnSeparatorStart = ""
-      columnSeparatorEnd = ""
-      defaultAlignment = ColumnTextAlignment.Left
-      defaultMinWidth = 0
-      columnOptions = Map.empty }
+    { separator = " "
+      separatorStart = ""
+      separatorEnd = ""
+      alignment = ColumnTextAlignment.Left
+      minWidth = 0
+      columns = Map.empty }
 
-let withDefaultAlignment alignment options =
+let withDefaultAlignment alignment options : WriteTableOptions =
     { options with
-          defaultAlignment = alignment }
+          alignment = alignment }
 
-let withDefaultMinWidth minWidth options =
+let withDefaultMinWidth minWidth options : WriteTableOptions =
     { options with
-          defaultMinWidth = minWidth }
+          minWidth = minWidth }
 
-let withColumnOptions index columnOptions options =
+let withColumn index column options : WriteTableOptions =
     { options with
-          columnOptions =
-              options.columnOptions
-              |> Map.add index columnOptions }
+          columns =
+              options.columns
+              |> Map.add index column }
 
 let withColumnUpdate updateFn index options =
     let updateFn =
         (function
         | Some o -> o
-        | None -> columnOptions)
+        | None -> columns)
         >> updateFn
         >> Some
 
     let map =
-        options.columnOptions |> Map.update index updateFn
+        options.columns |> Map.update index updateFn
 
-    { options with columnOptions = map }
+    { options with columns = map }
 
 let withColumnAlignment alignment =
     withColumnUpdate (withAlignment alignment)
@@ -116,20 +126,26 @@ let withColumnAlignment alignment =
 let withColumnMinWidth minWidth =
     withColumnUpdate (withMinWidth minWidth)
 
+let withColumnSeparator separator =
+    withColumnUpdate (withSeparator separator)
+
 let getColumnOption colFn defaultFn index options =
-    options.columnOptions
+    options.columns
     |> Map.tryFind index
     |> function
-        | Some columnOptions ->
-            colFn columnOptions
+        | Some columns ->
+            colFn columns
             |> Option.defaultValue (defaultFn options)
         | None -> defaultFn options
 
 let getColumnAlignment =
-    getColumnOption (fun c -> c.alignment) (fun o -> o.defaultAlignment)
+    getColumnOption (fun c -> c.alignment) (fun o -> o.alignment)
 
 let getColumnMinWidth =
-    getColumnOption (fun c -> c.minWidth) (fun o -> o.defaultMinWidth)
+    getColumnOption (fun c -> c.minWidth) (fun o -> o.minWidth)
+
+let getColumnSeparator =
+    getColumnOption (fun c -> c.separator) (fun o -> o.separator)
 
 let writeTable (options: WriteTableOptions) (rows: string list list) =
     let rowCount = List.length rows
@@ -156,12 +172,13 @@ let writeTable (options: WriteTableOptions) (rows: string list list) =
             for ri = 0 to rowCount - 1 do
                 let row = rows.[ri]
 
-                write options.columnSeparatorStart
+                write options.separatorStart
 
                 for ci = 0 to columnCount - 1 do
                     let column = row.[ci]
                     let columnWidth = columnSizes.[ci]
                     let alignment = getColumnAlignment ci options
+                    let separator = getColumnSeparator ci options
 
                     let text =
                         match alignment with
@@ -172,7 +189,7 @@ let writeTable (options: WriteTableOptions) (rows: string list list) =
                     write text
 
                     if ci < columnCount - 1 then
-                        write options.columnSeparator
+                        write separator
 
-                write options.columnSeparatorEnd
+                write options.separatorEnd
                 writeln ""
