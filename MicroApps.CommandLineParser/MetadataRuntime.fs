@@ -12,37 +12,44 @@ type StaticCommandLineMetadataProvider(metadata) =
 open Console
 open System
 
-type internal ShowHelpOptions =
-    { errors: string list
-      showDetails: bool
-      metadata: CommandLineMetadata
-      verbStack: VerbDesc list }
+module CommandLineMetadataRuntime =
+    type ShowHelpOptions =
+        { errors: string list
+          showDetails: bool
+          metadata: CommandLineMetadata
+          verbStack: VerbDesc list }
 
-type internal BuildPlanState =
-    { errors: string list
-      verbStack: VerbDesc list
-      valueMap: Map<string, obj>
-      tokens: ArgumentToken list }
+    type BuildPlanState =
+        { errors: string list
+          verbStack: VerbDesc list
+          valueMap: Map<string, obj>
+          tokens: ArgumentToken list }
 
-type internal BuildPlanError =
-    { errors: string list
-      verbStack: VerbDesc list
-      valueMap: Map<string, obj> }
+    type BuildPlanError =
+        { errors: string list
+          verbStack: VerbDesc list
+          valueMap: Map<string, obj> }
 
-type internal BuildPlanSuccess =
-    { execute: ExecuteVerbFunc
-      metadata: CommandLineMetadata
-      verbStack: VerbDesc list
-      valueMap: Map<string, obj> }
+    type BuildPlanSuccess =
+        { execute: ExecuteVerbFunc
+          verbStack: VerbDesc list
+          valueMap: Map<string, obj> }
 
-type internal BuildPlanResult = Result<BuildPlanSuccess, BuildPlanError>
+    type BuildPlanResult = Result<BuildPlanSuccess, BuildPlanError>
 
-type CommandLineMetadataRuntime
-    (
-        metadataProvider: ICommandLineMetadataProvider,
-        tokenizer: ICommandLineTokenizer,
-        serviceProvider: IServiceProvider
-    ) =
+    type FormSearchResult =
+        | FlagFormFound of FlagDesc
+        | OptionFormFound of OptionDesc
+
+    let getFlags group = group.flags
+    let getOptions group = group.options
+    let getArguments group = group.arguments
+    let getVerbs group = group.verbs
+    let getGroups verb = verb.groups
+    let getFlagKey (flag: FlagDesc) = flag.key
+    let getOptionKey (option: OptionDesc) = option.key
+    let getArgumentKey (argument: ArgumentDesc) = argument.key
+    let getVerbKey (verb: VerbDesc) = verb.key
 
     let getNameOfOr desc =
         if isNotNullOrWS desc.name then
@@ -84,534 +91,557 @@ type CommandLineMetadataRuntime
             | first :: _ -> $"-%c{first}"
             | [] -> desc.key
 
-    let showHelp (data: ShowHelpOptions) =
-        let writeErrors errors =
-            match errors with
+    let getSubVerbList verbDesc =
+        verbDesc.groups
+        |> Seq.collect (fun group -> group.verbs)
+        |> Seq.map (fun verb -> verb.key)
+        |> Seq.toList
+
+    let writeErrors errors =
+        match errors with
+        | [] -> ()
+        | errors ->
+            writelnC red "Errors:"
+
+            for error in errors do
+                writelnC red $"  * %s{error}"
+
+    let writeFocusedDesc (desc: ElementDesc) =
+        if isNotNullOrWS desc.name then
+            writelnC white $"%s{desc.name}"
+            writeln ""
+
+        if isNotNullOrWS desc.description then
+            writelnC gray desc.description
+            writeln ""
+        elif isNotNullOrWS desc.summary then
+            writelnC gray desc.summary
+            writeln ""
+
+    let writeParentDesc (desc: ElementDesc) =
+        if isNotNullOrWS desc.name then
+            writelnC white $"%s{desc.name}"
+            writeln ""
+
+    let (|HasNoFlags|HasFlags|) groupDesc =
+        match groupDesc.flags with
+        | [] -> HasNoFlags
+        | _ -> HasFlags
+
+    let isRequiredOption (o: OptionDesc) = o.isRequired
+
+    let (|HasNoOptions|HasRequiredOptions|HasOptions|) groupDesc =
+        match groupDesc.options with
+        | [] -> HasNoOptions
+        | ls when ls |> List.exists isRequiredOption -> HasRequiredOptions
+        | _ -> HasOptions
+
+    let isRequiredArgument (o: ArgumentDesc) = o.isRequired
+
+    let (|HasNoArguments|HasRequiredArguments|HasArguments|) groupDesc =
+        match groupDesc.arguments with
+        | [] -> HasNoArguments
+        | ls when ls |> List.exists isRequiredArgument -> HasRequiredArguments
+        | _ -> HasArguments
+
+    let (|HasNoVerbs|HasVerbs|) groupDesc =
+        match groupDesc.verbs with
+        | [] -> HasNoVerbs
+        | _ -> HasVerbs
+
+    let getMultiValuedHelp multiValued =
+        // No multi valued : ""
+        // Multivalued: " ..."
+        // MultiValued [): " min..."
+        // MultiValued (]: " ...max"
+        // MultiValued []: " min...max"
+        match multiValued with
+        | None -> ""
+        | Some ({ minCount = None; maxCount = None }) -> " ..."
+        | Some ({ minCount = Some minCount
+                  maxCount = None }) -> $" %d{minCount}..."
+        | Some ({ minCount = None
+                  maxCount = Some maxCount }) -> $" ...%d{maxCount}"
+        | Some ({ minCount = Some minCount
+                  maxCount = Some maxCount }) -> $" %d{minCount}...%d{maxCount}"
+
+    let getDefaultTextHelp =
+        Option.map snd
+        >> Option.map (sprintf "=%s")
+        >> Option.defaultValue ""
+
+    let getTriggers shortForms longForms =
+        [ yield! shortForms |> Seq.map (sprintf "-%c")
+          yield! longForms |> Seq.map (sprintf "--%s") ]
+        |> String.concat "|"
+
+    let getVerbChain (verbStack: VerbDesc list) =
+        verbStack
+        |> Seq.map (fun v -> v.key)
+        |> Seq.rev
+        |> String.concat " "
+
+    let writeUsages (prefix: string) groupDesc =
+        // usage: prefix first usage, which could be a default generated one if indicated
+        //    or: prefix second usage
+        //    or: ...
+        seq {
+            if groupDesc.showDefaultUsage then
+                // prefix [FLAGS] [OPTIONS] [ARGUMENTS] <COMMAND>
+                yield
+                    [ prefix
+
+                      match groupDesc with
+                      | HasNoFlags -> ""
+                      | HasFlags -> " [FLAGS]"
+
+                      match groupDesc with
+                      | HasNoOptions -> ""
+                      | HasRequiredOptions -> " <OPTIONS>"
+                      | HasOptions -> " [OPTIONS]"
+
+                      match groupDesc with
+                      | HasNoArguments -> ""
+                      | HasRequiredArguments -> " <ARGUMENTS>"
+                      | HasArguments -> " [ARGUMENTS]"
+
+                      match groupDesc with
+                      | HasNoVerbs -> ""
+                      | HasVerbs -> " <COMMAND>" ]
+                    |> String.concat ""
+
+            yield!
+                groupDesc.usages
+                |> Seq.map (sprintf "%s %s" prefix)
+        }
+        |> Seq.mapi
+            (fun index usage ->
+                if index = 0 then
+                    [ "usage"; usage ]
+                else
+                    [ "or"; usage ])
+        |> Seq.toList
+        |> fun table ->
+            let tableOptions =
+                { cleanTableOptions with
+                      separator = ": " }
+                |> withColumnAlignment ColumnTextAlignment.Right 0
+
+            writeTable tableOptions table
+            writeln ""
+
+    let writeArguments prefix groupDesc =
+        groupDesc.arguments
+        |> Seq.map
+            (fun arg ->
+                // * arg-name | <type(s)> ... =<default> | Summary
+                let isRequired = if arg.isRequired then $"* " else ""
+                let argName = arg.key
+                let summary = getSummaryOf arg.desc
+
+                let typeConfig =
+                    [ $"<%s{arg.reader.typeName}>"
+                      getMultiValuedHelp arg.multiValued
+                      getDefaultTextHelp arg.defaultValue ]
+                    |> String.concat " "
+
+                [ isRequired
+                  argName
+                  typeConfig
+                  summary ])
+        |> Seq.toList
+        |> function
             | [] -> ()
-            | errors ->
-                writelnC red "Errors:"
-
-                for error in errors do
-                    writelnC red $"  * %s{error}"
-
-        let writeFocusedDesc (desc: ElementDesc) =
-            if isNotNullOrWS desc.name then
-                writelnC white $"%s{desc.name}"
-                writeln ""
-
-            if isNotNullOrWS desc.description then
-                writelnC gray desc.description
-                writeln ""
-            elif isNotNullOrWS desc.summary then
-                writelnC gray desc.summary
-                writeln ""
-
-        let writeParentDesc (desc: ElementDesc) =
-            if isNotNullOrWS desc.name then
-                writelnC white $"%s{desc.name}"
-                writeln ""
-
-        let (|HasNoFlags|HasFlags|) groupDesc =
-            match groupDesc.flags with
-            | [] -> HasNoFlags
-            | _ -> HasFlags
-
-        let isRequiredOption (o: OptionDesc) = o.isRequired
-
-        let (|HasNoOptions|HasRequiredOptions|HasOptions|) groupDesc =
-            match groupDesc.options with
-            | [] -> HasNoOptions
-            | ls when ls |> List.exists isRequiredOption -> HasRequiredOptions
-            | _ -> HasOptions
-
-        let isRequiredArgument (o: ArgumentDesc) = o.isRequired
-
-        let (|HasNoArguments|HasRequiredArguments|HasArguments|) groupDesc =
-            match groupDesc.arguments with
-            | [] -> HasNoArguments
-            | ls when ls |> List.exists isRequiredArgument -> HasRequiredArguments
-            | _ -> HasArguments
-
-        let (|HasNoVerbs|HasVerbs|) groupDesc =
-            match groupDesc.verbs with
-            | [] -> HasNoVerbs
-            | _ -> HasVerbs
-
-        let getMultiValuedHelp multiValued =
-            // No multi valued : ""
-            // Multivalued: " ..."
-            // MultiValued [): " min..."
-            // MultiValued (]: " ...max"
-            // MultiValued []: " min...max"
-            match multiValued with
-            | None -> ""
-            | Some ({ minCount = None; maxCount = None }) -> " ..."
-            | Some ({ minCount = Some minCount
-                      maxCount = None }) -> $" %d{minCount}..."
-            | Some ({ minCount = None
-                      maxCount = Some maxCount }) -> $" ...%d{maxCount}"
-            | Some ({ minCount = Some minCount
-                      maxCount = Some maxCount }) -> $" %d{minCount}...%d{maxCount}"
-
-        let getDefaultTextHelp =
-            Option.map snd
-            >> Option.map (sprintf "=%s")
-            >> Option.defaultValue ""
-
-        let getTriggers shortForms longForms =
-            [ yield! shortForms |> Seq.map (sprintf "-%c")
-              yield! longForms |> Seq.map (sprintf "-%s") ]
-            |> String.concat "|"
-
-        let getVerbChain (verbStack: VerbDesc list) =
-            verbStack
-            |> Seq.map (fun v -> v.key)
-            |> Seq.rev
-            |> String.concat " "
-
-        let writeUsages (prefix: string) groupDesc =
-            // usage: prefix first usage, which could be a default generated one if indicated
-            //    or: prefix second usage
-            //    or: ...
-            seq {
-                if groupDesc.showDefaultUsage then
-                    // prefix [FLAGS] [OPTIONS] [ARGUMENTS] <COMMAND>
-                    yield
-                        [ prefix
-
-                          match groupDesc with
-                          | HasNoFlags -> ""
-                          | HasFlags -> " [FLAGS]"
-
-                          match groupDesc with
-                          | HasNoOptions -> ""
-                          | HasRequiredOptions -> " <OPTIONS>"
-                          | HasOptions -> " [OPTIONS]"
-
-                          match groupDesc with
-                          | HasNoArguments -> ""
-                          | HasRequiredArguments -> " <ARGUMENTS>"
-                          | HasArguments -> " [ARGUMENTS]"
-
-                          match groupDesc with
-                          | HasNoVerbs -> ""
-                          | HasVerbs -> " <COMMAND>" ]
-                        |> String.concat ""
-
-                yield! groupDesc.usages
-            }
-            |> Seq.mapi
-                (fun index usage ->
-                    if index = 0 then
-                        [ "usage"; usage ]
-                    else
-                        [ "or"; usage ])
-            |> Seq.toList
-            |> fun table ->
+            | table ->
                 let tableOptions =
                     { cleanTableOptions with
-                          separator = ": " }
-                    |> withColumnAlignment ColumnTextAlignment.Right 0
+                          separator = "   "
+                          separatorStart = "  " }
+                    |> withColumnMinWidth 14 1
+                    |> withColumnSeparator "" 0
 
+                writeln $"%s{prefix}Arguments:"
                 writeTable tableOptions table
                 writeln ""
 
-        let writeArguments prefix groupDesc =
-            groupDesc.arguments
-            |> Seq.map
-                (fun arg ->
-                    // * arg-name | <type(s)> ... =<default> | Summary
-                    let isRequired = if arg.isRequired then $"* " else ""
-                    let argName = arg.key
-                    let summary = getSummaryOf arg.desc
-
-                    let typeConfig =
-                        [ $"<%s{arg.reader.typeName}>"
-                          getMultiValuedHelp arg.multiValued
-                          getDefaultTextHelp arg.defaultValue ]
-                        |> String.concat " "
-
-                    [ isRequired
-                      argName
-                      typeConfig
-                      summary ])
-            |> Seq.toList
-            |> function
-                | [] -> ()
-                | table ->
-                    let tableOptions =
-                        { cleanTableOptions with
-                              separator = "   "
-                              separatorStart = "  " }
-                        |> withColumnMinWidth 14 0
-                        |> withColumnSeparator "" 0
-
-                    writeln $"%s{prefix}Arguments:"
-                    writeTable tableOptions table
-                    writeln ""
-
-        let writeFlags prefix groupDesc =
-            groupDesc.flags
-            |> Seq.map
-                (fun arg ->
-                    // * -f|--flag | Summary
-                    let triggers = getTriggers arg.shortForms arg.longForms
-                    let summary = getSummaryOf arg.desc
-                    [ triggers; summary ])
-            |> Seq.toList
-            |> function
-                | [] -> ()
-                | table ->
-                    let tableOptions =
-                        { cleanTableOptions with
-                              separator = "   "
-                              separatorStart = "  " }
-                        |> withColumnMinWidth 14 0
-
-                    writeln $"%s{prefix}Flags:"
-                    writeTable tableOptions table
-                    writeln ""
-
-        let writeOptions prefix groupDesc =
-            groupDesc.options
-            |> Seq.map
-                (fun arg ->
-                    // * -o|--option | <type(s)> ... =<default> | Summary
-                    let isRequired = if arg.isRequired then $"* " else ""
-                    let triggers = getTriggers arg.shortForms arg.longForms
-                    let summary = getSummaryOf arg.desc
-
-                    let typeConfig =
-                        [ $"<%s{arg.reader.typeName}>"
-                          getMultiValuedHelp arg.multiValued
-                          getDefaultTextHelp arg.defaultValue ]
-                        |> String.concat " "
-
-                    [ isRequired
-                      triggers
-                      typeConfig
-                      summary ])
-            |> Seq.toList
-            |> function
-                | [] -> ()
-                | table ->
-                    let tableOptions =
-                        { cleanTableOptions with
-                              separator = "   "
-                              separatorStart = "  " }
-                        |> withColumnMinWidth 14 0
-                        |> withColumnSeparator "" 0
-
-                    writeln $"%s{prefix}Options:"
-                    writeTable tableOptions table
-                    writeln ""
-
-        let writeVerbs prefix groupDesc =
-            groupDesc.verbs
-            |> Seq.map
-                (fun arg ->
-                    // command | Summary
-                    let command = arg.key
-
-                    let summary =
-                        match arg.groups with
-                        | [] -> "This verb has no functionality"
-                        | head :: _ -> getSummaryOf head.desc
-
-                    [ command; summary ])
-            |> Seq.toList
-            |> function
-                | [] -> ()
-                | table ->
-                    let tableOptions =
-                        { cleanTableOptions with
-                              separator = "   "
-                              separatorStart = "  " }
-                        |> withColumnMinWidth 14 0
-
-                    writeln $"%s{prefix}Commands:"
-                    writeTable tableOptions table
-                    writeln ""
-
-        let writeExamples prefix groupDesc =
-            match groupDesc.examples with
+    let writeFlags prefix groupDesc =
+        groupDesc.flags
+        |> Seq.map
+            (fun arg ->
+                // * -f|--flag | Summary
+                let triggers = getTriggers arg.shortForms arg.longForms
+                let summary = getSummaryOf arg.desc
+                [ triggers; summary ])
+        |> Seq.toList
+        |> function
             | [] -> ()
-            | examples when data.showDetails ->
-                writeln $"%s{prefix}Examples:"
+            | table ->
+                let tableOptions =
+                    { cleanTableOptions with
+                          separator = "   "
+                          separatorStart = "  " }
+                    |> withColumnMinWidth 14 0
 
-                for example in examples do
-                    writeln example
-                    writeln ""
-            | _ -> ()
+                writeln $"%s{prefix}Flags:"
+                writeTable tableOptions table
+                writeln ""
 
-        let writeGroups focused verbChain verbDesc =
-            verbDesc.groups
-            |> Seq.iteri
-                (fun index groupDesc ->
-                    let prefix =
-                        if index = 0 then
-                            ""
-                        else
-                            (getNameOf groupDesc.desc) + " "
+    let writeOptions prefix groupDesc =
+        groupDesc.options
+        |> Seq.map
+            (fun arg ->
+                // * -o|--option | <type(s)> ... =<default> | Summary
+                let isRequired = if arg.isRequired then $"* " else ""
+                let triggers = getTriggers arg.shortForms arg.longForms
+                let summary = getSummaryOf arg.desc
 
+                let typeConfig =
+                    [ $"<%s{arg.reader.typeName}>"
+                      getMultiValuedHelp arg.multiValued
+                      getDefaultTextHelp arg.defaultValue ]
+                    |> String.concat " "
+
+                [ isRequired
+                  triggers
+                  typeConfig
+                  summary ])
+        |> Seq.toList
+        |> function
+            | [] -> ()
+            | table ->
+                let tableOptions =
+                    { cleanTableOptions with
+                          separator = "   "
+                          separatorStart = "  " }
+                    |> withColumnMinWidth 14 1
+                    |> withColumnSeparator "" 0
+
+                writeln $"%s{prefix}Options:"
+                writeTable tableOptions table
+                writeln ""
+
+    let writeVerbs prefix groupDesc =
+        groupDesc.verbs
+        |> Seq.map
+            (fun arg ->
+                // command | Summary
+                let command = arg.key
+
+                let summary =
+                    match arg.groups with
+                    | [] -> "This verb has no functionality"
+                    | head :: _ -> getSummaryOf head.desc
+
+                [ command; summary ])
+        |> Seq.toList
+        |> function
+            | [] -> ()
+            | table ->
+                let tableOptions =
+                    { cleanTableOptions with
+                          separator = "   "
+                          separatorStart = "  " }
+                    |> withColumnMinWidth 14 0
+
+                writeln $"%s{prefix}Commands:"
+                writeTable tableOptions table
+                writeln ""
+
+    let writeExamples showDetails prefix groupDesc =
+        match groupDesc.examples with
+        | [] -> ()
+        | examples when showDetails ->
+            writeln $"%s{prefix}Examples:"
+
+            for example in examples do
+                writeln example
+                writeln ""
+        | _ -> ()
+
+    let writeGroups showDetails focused verbChain verbDesc =
+        verbDesc.groups
+        |> Seq.iteri
+            (fun index groupDesc ->
+                let prefix =
+                    if index = 0 then
+                        ""
+                    else
+                        (getNameOf groupDesc.desc) + " "
+
+                if groupDesc.showSummary then
                     if focused then
                         writeFocusedDesc groupDesc.desc
                     else
                         writeParentDesc groupDesc.desc
 
-                    writeUsages verbChain groupDesc
-                    writeArguments verbChain groupDesc
-                    writeFlags verbChain groupDesc
-                    writeOptions verbChain groupDesc
+                writeUsages verbChain groupDesc
+                writeArguments prefix groupDesc
+                writeFlags prefix groupDesc
+                writeOptions prefix groupDesc
 
-                    if focused then
-                        writeVerbs verbChain groupDesc
-                        writeExamples verbChain groupDesc
+                if focused then
+                    writeVerbs prefix groupDesc
+                    writeExamples showDetails prefix groupDesc
 
-                    )
+                )
 
+    let showHelp (data: ShowHelpOptions) =
         let rec helpLoop focused verbStack =
             let verbChain = getVerbChain verbStack
 
             match verbStack with
             | verbDesc :: tail ->
-                writeGroups focused verbChain verbDesc
+                writeGroups data.showDetails focused verbChain verbDesc
                 helpLoop false tail
             | _ -> ()
 
         writeErrors data.errors
         helpLoop true data.verbStack
 
-    let buildPlan metadata tokens : BuildPlanResult =
-        let searchArgument localOnly notFoundMsg multipleFoundMsg getMatches verbStack =
-            let findVerbCandidates arguments =
-                arguments |> Seq.collect getMatches |> Seq.toList
+    let searchOnStack localOnly notFoundMsg multipleFoundMsg getCollection verbStack =
+        let findCandidates verbDesc =
+            verbDesc.groups
+            |> Seq.collect getCollection
+            |> Seq.toList
 
-            let rec loop verbStack =
-                match verbStack with
-                | [] -> []
-                | CommandLineVerb (desc, verbDesc) :: verbStack' ->
-                    match findVerbCandidates verbDesc.arguments with
-                    | [] ->
-                        if localOnly then
-                            []
-                        else
-                            loop verbStack'
-                    | candidates -> candidates
-                | other :: _ -> failwith $"Unexpected element %A{other}"
+        let rec loop verbStack =
+            match verbStack with
+            | [] -> []
+            | verbDesc :: verbStack' ->
+                match findCandidates verbDesc with
+                | [] ->
+                    if localOnly then
+                        []
+                    else
+                        loop verbStack'
+                | candidates -> candidates
 
-            loop verbStack
-            |> function
-                | [] -> Error [ notFoundMsg ]
-                | candidate :: [] -> Ok candidate
-                | _ -> Error [ multipleFoundMsg ]
+        loop verbStack
+        |> function
+            | [] -> Error [ notFoundMsg ]
+            | candidate :: [] -> Ok candidate
+            | _ -> Error [ multipleFoundMsg ]
 
-        let searchShortForm char =
-            let containsForm = List.contains char
+    let searchShortForm char =
+        let containsForm = List.contains char
 
-            searchArgument
-                false
-                $"Short option '-%c{char}' not found"
-                $"Multiple arguments use short option '-%c{char}'"
-                (function
-                | CommandLineFlag (desc, argDesc, flagDesc) when containsForm flagDesc.shortForms ->
-                    [ CommandLineFlag(desc, argDesc, flagDesc) ]
-                | CommandLineOption (desc, argDesc, optDesc) when containsForm optDesc.shortForms ->
-                    [ CommandLineOption(desc, argDesc, optDesc) ]
-                | _ -> [])
+        let getCollection group =
+            seq {
+                yield!
+                    group.flags
+                    |> Seq.filter (fun flag -> containsForm flag.shortForms)
+                    |> Seq.map FlagFormFound
 
-        let searchLongForm str =
-            let containsForm = List.contains str
+                yield!
+                    group.options
+                    |> Seq.filter (fun flag -> containsForm flag.shortForms)
+                    |> Seq.map OptionFormFound
+            }
 
-            searchArgument
-                false
-                $"Long option '--%s{str}' not found"
-                $"Multiple arguments use long option '--%s{str}'"
-                (function
-                | CommandLineFlag (desc, argDesc, flagDesc) when containsForm flagDesc.longForms ->
-                    [ CommandLineFlag(desc, argDesc, flagDesc) ]
-                | CommandLineOption (desc, argDesc, optDesc) when containsForm optDesc.longForms ->
-                    [ CommandLineOption(desc, argDesc, optDesc) ]
-                | _ -> [])
+        searchOnStack
+            false
+            $"Short option '-%c{char}' not found"
+            $"Multiple arguments use short option '-%c{char}'"
+            getCollection
 
-        let searchCommand str =
-            searchArgument
-                true
-                $"Command '%s{str}' not found"
-                $"Multiple commands use verb '%s{str}'"
-                (function
-                | CommandLineVerb (desc, verbDesc) when verbDesc.verb = str -> [ CommandLineVerb(desc, verbDesc) ]
-                | _ -> [])
+    let searchLongForm str =
+        let containsForm = List.contains str
 
-        let fillDefaultValues verbStack valueMap =
-            let rec loopArgs arguments (valueMap: Map<string, obj>) =
-                match arguments with
-                | [] -> valueMap
+        let getCollection group =
+            seq {
+                yield!
+                    group.flags
+                    |> Seq.filter (fun flag -> containsForm flag.longForms)
+                    |> Seq.map FlagFormFound
 
-                | CommandLineFlag (_, argDesc, _) :: tail ->
-                    valueMap
-                    |> Map.update
-                        argDesc.key
-                        (function
-                        | Some v -> Some v
-                        | None -> Some false)
-                    |> loopArgs tail
+                yield!
+                    group.options
+                    |> Seq.filter (fun flag -> containsForm flag.longForms)
+                    |> Seq.map OptionFormFound
+            }
 
-                | CommandLineOption (_, argDesc, optDesc) :: tail ->
-                    match optDesc.defaultValue with
+        searchOnStack
+            false
+            $"Long option '--%s{str}' not found"
+            $"Multiple arguments use long option '--%s{str}'"
+            getCollection
+
+    let searchVerb str =
+        let getCollection group =
+            group.verbs
+            |> Seq.filter (fun verb -> verb.key = str)
+
+        searchOnStack true $"Command '%s{str}' not found" $"Multiple commands use verb '%s{str}'" getCollection
+
+    let fillDefaultValues verbStack valueMap =
+        let loopItems getCollection getKey getDefaultValue verbDesc valueMap =
+            verbDesc.groups
+            |> Seq.collect getCollection
+            |> Seq.fold
+                (fun acc item ->
+                    match getDefaultValue item with
+                    | None -> acc
                     | Some value ->
-                        valueMap
+                        acc
                         |> Map.update
-                            argDesc.key
+                            (getKey item)
                             (function
                             | Some v -> Some v
-                            | None -> Some value)
-                    | None -> valueMap
-                    |> loopArgs tail
+                            | None -> Some value))
+                valueMap
 
-                | CommandLinePositional (_, argDesc, posDesc) :: tail ->
-                    match posDesc.defaultValue with
-                    | Some value ->
-                        valueMap
-                        |> Map.update
-                            argDesc.key
-                            (function
-                            | Some v -> Some v
-                            | None -> Some value)
-                    | None -> valueMap
-                    |> loopArgs tail
+        let loopFlags =
+            let someFalse _ = Some(false :> obj)
+            loopItems getFlags getFlagKey someFalse
 
-                | _ :: tail -> loopArgs tail valueMap
+        let loopOptions =
+            let getDefault (o: OptionDesc) = o.defaultValue |> Option.map fst
+            loopItems getOptions getOptionKey getDefault
 
-            let rec loopPath verbStack valueMap =
-                match verbStack with
-                | [] -> valueMap
-                | CommandLineVerb (desc, verbDesc) :: tail ->
-                    valueMap
-                    |> loopArgs verbDesc.arguments
-                    |> loopPath tail
-                | other :: _ -> failwith $"Unexpected element: %A{other}"
+        let loopArguments =
+            let getDefault (a: ArgumentDesc) = a.defaultValue |> Option.map fst
+            loopItems getArguments getArgumentKey getDefault
 
-            loopPath verbStack valueMap
+        let loopVerb verbDesc (valueMap: Map<string, obj>) =
+            valueMap
+            |> loopFlags verbDesc
+            |> loopOptions verbDesc
+            |> loopArguments verbDesc
 
-        let checkMultiValued prefix multiValued (value: obj) =
-            match multiValued with
-            | None -> []
-            | Some constraints ->
-                match value with
-                | :? (list<obj>) as values ->
-                    [ let count = List.length values
+        let rec loopPath verbStack valueMap =
+            match verbStack with
+            | [] -> valueMap
+            | verbDesc :: tail -> valueMap |> loopVerb verbDesc |> loopPath tail
 
-                      match constraints.minCount with
-                      | Some minCount when count < minCount ->
-                          yield
-                              $"%s{prefix} was expected to have at least %i{minCount} elements, but %i{count} were found"
-                      | _ -> ()
+        loopPath verbStack valueMap
 
-                      match constraints.maxCount with
-                      | Some maxCount when count < maxCount ->
-                          yield
-                              $"%s{prefix} was expected to have at most %i{maxCount} elements, but %i{count} were found"
-                      | _ -> () ]
-                | other -> failwith $"Unexpected element %A{other}"
+    let checkMultiValued prefix multiValued (value: obj) =
+        match multiValued with
+        | None -> []
+        | Some constraints ->
+            match value with
+            | :? (list<obj>) as values ->
+                [ let count = List.length values
 
-        let searchInvalidConstraints verbStack (valueMap: Map<string, obj>) =
-            let rec loopArgs arguments errors =
-                match arguments with
-                | [] -> errors
+                  match constraints.minCount with
+                  | Some minCount when count < minCount ->
+                      yield $"%s{prefix} was expected to have at least %i{minCount} elements, but %i{count} were found"
+                  | _ -> ()
 
-                | CommandLineOption (_, argDesc, optDesc) :: tail ->
-                    match argDesc.isRequired with
-                    | true ->
-                        let form = getOptionForm argDesc optDesc
 
-                        match valueMap |> Map.tryFind argDesc.key with
-                        | Some value ->
-                            value
-                            |> checkMultiValued $"Option %s{form}" optDesc.multiValued
-                            |> (fun es -> es @ errors)
-                        | None -> $"Missing required option %s{form}" :: errors
-                        |> loopArgs tail
-                    | false -> loopArgs tail errors
+                  match constraints.maxCount with
+                  | Some maxCount when count < maxCount ->
+                      yield $"%s{prefix} was expected to have at most %i{maxCount} elements, but %i{count} were found"
+                  | _ -> () ]
+            | other -> failwith $"Unexpected element %A{other}"
 
-                | CommandLinePositional (_, argDesc, posDesc) :: tail ->
-                    match argDesc.isRequired with
-                    | true ->
-                        match valueMap |> Map.tryFind argDesc.key with
-                        | Some value ->
-                            value
-                            |> checkMultiValued $"Argument %s{argDesc.key}" posDesc.multiValued
-                            |> (fun es -> es @ errors)
-                        | None ->
-                            $"Missing required option %s{argDesc.key}"
-                            :: errors
-                        |> loopArgs tail
-                    | false -> loopArgs tail errors
+    let searchInvalidConstraints verbStack (valueMap: Map<string, obj>) =
+        let loopItems getCollection getErrors verbDesc errors =
+            verbDesc.groups
+            |> Seq.collect getCollection
+            |> Seq.fold
+                (fun acc item ->
+                    let newErrors = getErrors item
+                    newErrors @ acc)
+                errors
 
-                | _ :: tail -> loopArgs tail errors
+        let loopOptions =
+            let getErrors (optDesc: OptionDesc) =
+                match valueMap |> Map.tryFind optDesc.key with
+                | Some value ->
+                    let form = getOptionForm optDesc
+                    checkMultiValued $"Option %s{form}" optDesc.multiValued value
+                | None ->
+                    if optDesc.isRequired then
+                        let form = getOptionForm optDesc
+                        [ $"Missing required option %s{form}" ]
+                    else
+                        []
 
-            let rec loopPath verbStack errors =
-                match verbStack with
-                | [] -> List.rev errors
-                | CommandLineVerb (desc, verbDesc) :: tail ->
-                    errors
-                    |> loopArgs verbDesc.arguments
-                    |> loopPath tail
-                | other :: _ -> failwith $"Unexpected element: %A{other}"
+            loopItems getOptions getErrors
 
-            loopPath verbStack []
+        let loopArguments =
+            let getErrors (argDesc: ArgumentDesc) =
+                match valueMap |> Map.tryFind argDesc.key with
+                | Some value ->
+                    let form = argDesc.key
+                    checkMultiValued $"Argument %s{form}" argDesc.multiValued value
+                | None ->
+                    if argDesc.isRequired then
+                        let form = argDesc.key
+                        [ $"Missing required argument %s{form}" ]
+                    else
+                        []
 
-        let rec loop (state: BuildPlanState) =
-            let asError errors valueMap =
-                Error
-                    { errors = errors
-                      verbStack = state.verbStack
-                      valueMap = valueMap }
+            loopItems getArguments getErrors
 
-            let asOk execute valueMap =
-                Ok
-                    { execute = execute
-                      verbStack = state.verbStack
-                      metadata = metadata
-                      valueMap = valueMap }
+        let rec loopVerb verbDesc =
+            loopOptions verbDesc >> loopArguments verbDesc
 
-            let nonExecutableError verbDesc =
+        let rec loopPath verbStack errors =
+            match verbStack with
+            | [] -> List.rev errors
+            | verbDesc :: tail -> errors |> loopVerb verbDesc |> loopPath tail
+
+        loopPath verbStack []
+
+    let buildError errors verbStack valueMap =
+        Error
+            { errors = errors
+              verbStack = verbStack
+              valueMap = valueMap }
+
+    let buildSuccess execute verbStack valueMap =
+        Ok
+            { execute = execute
+              verbStack = verbStack
+              valueMap = valueMap }
+
+    let checkExecutingCommand (verbStack: VerbDesc list) valueMap =
+        match verbStack with
+        | verbDesc :: _ ->
+            match verbDesc.execute with
+            | None -> // When selected verb is not executable
                 let subcommands =
-                    getSubCommandVerbs verbDesc.arguments
-                    |> String.concat ", "
+                    getSubVerbList verbDesc |> String.concat ", "
 
                 let error =
-                    $"Command %s{verbDesc.verb} is not executable. "
+                    $"Command %s{verbDesc.key} is not executable. "
                     + $"Try one of the sub-commands: %s{subcommands}"
 
-                asError [ error ] state.valueMap
+                buildError [ error ] verbStack valueMap
 
-            let asExecutableCommand verbDesc =
-                let valueMap =
-                    fillDefaultValues state.verbStack state.valueMap
+            | Some execute ->
+                let valueMap = fillDefaultValues verbStack valueMap
 
-                match searchInvalidConstraints state.verbStack valueMap with
+                match searchInvalidConstraints verbStack valueMap with
                 | [] -> // When all required options are fulfilled
-                    asOk verbDesc valueMap
+                    buildSuccess execute verbStack valueMap
                 | errors -> // When some required options are missing
-                    asError errors valueMap
+                    buildError errors verbStack valueMap
 
+        | [] -> failwith $"Unexpected empty command list"
+
+open CommandLineMetadataRuntime
+
+type CommandLineMetadataRuntime
+    (
+        metadataProvider: ICommandLineMetadataProvider,
+        tokenizer: ICommandLineTokenizer,
+        serviceProvider: IServiceProvider
+    ) =
+
+    let buildPlan metadata tokens : BuildPlanResult =
+
+        let rec buildLoop (state: BuildPlanState) =
             match state.tokens with
             | [] -> // When there are no more tokens to proecss
                 match state.errors with
                 | [] -> // When there are no errors from looking up for tokens in metadata
-                    match state.verbStack with
-                    | CommandLineVerb (_, verbDesc) :: _ ->
-                        match verbDesc.execute with
-                        | None -> // When selected verb is not executable
-                            nonExecutableError verbDesc
-                        | Some execute -> asExecutableCommand execute
-
-                    | other :: _ -> failwith $"Unexpected element %A{other}"
-                    | [] -> failwith $"Unexpected empty list"
+                    checkExecutingCommand state.verbStack state.valueMap
 
                 | errors -> // When parsing errors
-                    asError (List.rev errors) state.valueMap
+                    buildError (List.rev errors) state.verbStack state.valueMap
 
             | token :: tokens' ->
                 let withErrors errors =
@@ -630,94 +660,100 @@ type CommandLineMetadataRuntime
                     match result with
                     | Error errors -> withErrors errors
 
-                    | Ok (CommandLineFlag (desc, argDesc, flagDesc)) ->
-                        match Map.tryFind argDesc.key state.valueMap with
-                        | Some value ->
-                            let form = getFlagForm argDesc flagDesc
-
+                    | Ok (FlagFormFound flagDesc) ->
+                        match Map.tryFind flagDesc.key state.valueMap with
+                        | Some _ ->
+                            let form = getFlagForm flagDesc
                             withErrors [ $"Flag '%s{form}' was found multiple times" ]
-                        | None -> withValues (state.valueMap |> Map.add argDesc.key true)
+                        | None -> withValues (state.valueMap |> Map.add flagDesc.key true)
 
-                    | Ok (CommandLineOption (desc, argDesc, optDesc)) ->
+                    | Ok (OptionFormFound optDesc) ->
                         let readOptionValue () =
-                            let rec loop tokens remaining inputs =
+                            let rec readLoop tokens remaining inputs =
                                 match tokens, remaining with
                                 | _, n when n < 0 ->
-                                    let form = getOptionForm argDesc optDesc
-                                    failwith $"Token count cannot be negative in {form}"
+                                    let form = getOptionForm optDesc
+                                    failwith $"Token count cannot be negative reading {form} values"
+
                                 | tokens', 0 ->
                                     optDesc.reader.read (List.rev inputs)
                                     |> Result.map (fun value -> value, tokens')
                                     |> Result.mapError List.singleton
-                                | [], n ->
-                                    let form = getOptionForm argDesc optDesc
-                                    Error [ $"Expecting %i{n} additional parameters but no more arguments were given, reading {form}" ]
-                                | ValueToken str :: tokens', n -> loop tokens' (n - 1) (str :: inputs)
-                                | ShortFormToken char :: _, n ->
-                                    let form = getOptionForm argDesc optDesc
-                                    Error [ $"Expecting %i{n} additional parameters but found '%c{char}', reading {form}" ]
-                                | LongFormToken str :: _, n ->
-                                    let form = getOptionForm argDesc optDesc
-                                    Error [ $"Expecting %i{n} additional parameters but found '%s{str}', reading {form}" ]
 
-                            loop tokens' optDesc.reader.tokenCount []
+                                | [], n ->
+                                    let form = getOptionForm optDesc
+                                    Error [ $"Expecting %i{n} additional parameters but no more arguments were given, reading {form} values" ]
+
+                                | ValueToken str :: tokens', n -> readLoop tokens' (n - 1) (str :: inputs)
+
+                                | ShortFormToken char :: _, n ->
+                                    let form = getOptionForm optDesc
+                                    Error [ $"Expecting %i{n} additional parameters but found '%c{char}', reading {form} values" ]
+
+                                | LongFormToken str :: _, n ->
+                                    let form = getOptionForm optDesc
+                                    Error [ $"Expecting %i{n} additional parameters but found '%s{str}', reading {form} values" ]
+
+                            readLoop tokens' optDesc.reader.tokenCount []
 
                         let accumulateValue accumFn =
                             match readOptionValue () with
                             | Error errors -> withErrors errors
+
                             | Ok (value, tokens') ->
                                 let value' = accumFn value
-                                withValuesAndTokens (state.valueMap |> Map.add argDesc.key value') tokens'
+                                withValuesAndTokens (state.valueMap |> Map.add optDesc.key value') tokens'
 
-                        match Map.tryFind argDesc.key state.valueMap, optDesc.multiValued with
+                        match Map.tryFind optDesc.key state.valueMap, optDesc.multiValued with
                         | Some _, None -> // When existing value and single-valued option
-                            let form = getOptionForm argDesc optDesc
+                            let form = getOptionForm optDesc
                             withErrors [ $"Option '%s{form}' was found multiple times" ]
+
                         | None, None -> // When single-valued option
                             accumulateValue id
+
                         | Some value, Some _ -> // When existing values and multi-valued option
                             accumulateValue
                                 (fun newValue ->
                                     match value with
                                     | :? list<obj> as accum -> accum @ [ newValue ]
                                     | other -> failwith $"Unexpected element %A{other}")
+
                         | None, Some _ -> // When multi-valued option
                             accumulateValue (fun value -> [ value ])
-
-                    | Ok (other) -> failwith $"Unexpected element %A{other}"
 
                 match token with
                 | ShortFormToken char ->
                     searchShortForm char state.verbStack
                     |> ofFlagOrOptionResult
-                    |> loop
+                    |> buildLoop
+
                 | LongFormToken str ->
                     searchLongForm str state.verbStack
                     |> ofFlagOrOptionResult
-                    |> loop
+                    |> buildLoop
+
                 | ValueToken str ->
-                    match searchCommand str state.verbStack with
+                    match searchVerb str state.verbStack with
                     | Error errors ->
                         { state with
                               errors = errors @ state.errors
                               tokens = tokens' }
-                        |> loop
-                    | Ok (CommandLineVerb (desc, verbDesc)) ->
-                        { state with
-                              verbStack =
-                                  (CommandLineVerb(desc, verbDesc))
-                                  :: state.verbStack
-                              tokens = tokens' }
-                        |> loop
-                    | Ok other -> failwith $"Unexpected element %A{other}"
+                        |> buildLoop
 
-        loop
+                    | Ok verbDesc ->
+                        { state with
+                              verbStack = verbDesc :: state.verbStack
+                              tokens = tokens' }
+                        |> buildLoop
+
+        buildLoop
             { errors = []
-              verbStack = [ CommandLineVerb(metadata.desc, metadata.verb) ]
+              verbStack = [ metadata.verb ]
               valueMap = Map.empty
               tokens = tokens }
 
-    let executePlan (plan: BuildPlanSuccess) =
+    let executePlan metadata (plan: BuildPlanSuccess) =
         async {
             let context: ExecuteVerbContext =
                 { services = serviceProvider
@@ -725,8 +761,8 @@ type CommandLineMetadataRuntime
                       fun errors ->
                           showHelp
                               { errors = errors
-                                showExamples = false
-                                metadata = plan.metadata
+                                showDetails = false
+                                metadata = metadata
                                 verbStack = plan.verbStack }
                   valueMap = plan.valueMap }
 
@@ -747,9 +783,9 @@ type CommandLineMetadataRuntime
             | Error errors ->
                 showHelp
                     { errors = errors
-                      showExamples = false
+                      showDetails = false
                       metadata = metadata
-                      verbStack = [ CommandLineVerb(metadata.desc, metadata.verb) ] }
+                      verbStack = [ metadata.verb ] }
 
                 return { exitCode = 1 }
             | Ok tokens ->
@@ -762,16 +798,17 @@ type CommandLineMetadataRuntime
 
                 match executionPlan with
                 | Error error ->
-                    let examplesFlag =
-                        getBoolKey metadata.examplesFlagKey error.valueMap
+                    let detailedHelpFlag =
+                        getBoolKey metadata.detailedHelpFlagKey error.valueMap
 
                     showHelp
                         { errors = error.errors
-                          showExamples = examplesFlag
+                          showDetails = detailedHelpFlag
                           metadata = metadata
                           verbStack = error.verbStack }
 
                     return { exitCode = 1 }
+
                 | Ok plan ->
                     let versionFlag =
                         getBoolKey metadata.versionFlagKey plan.valueMap
@@ -780,22 +817,24 @@ type CommandLineMetadataRuntime
                         writeln metadata.version
                         return { exitCode = 0 }
                     else
+                        let detailedHelpFlag =
+                            getBoolKey metadata.detailedHelpFlagKey plan.valueMap
+
                         let helpFlag =
-                            getBoolKey metadata.helpFlagKey plan.valueMap
+                            detailedHelpFlag
+                            || getBoolKey metadata.helpFlagKey plan.valueMap
 
                         if helpFlag then
-                            let examplesFlag =
-                                getBoolKey metadata.examplesFlagKey plan.valueMap
 
                             showHelp
                                 { errors = []
-                                  showExamples = examplesFlag
+                                  showDetails = detailedHelpFlag
                                   metadata = metadata
                                   verbStack = plan.verbStack }
 
                             return { exitCode = 0 }
                         else
-                            return! executePlan plan
+                            return! executePlan metadata plan
         }
 
     interface ICommandLineRuntime with
