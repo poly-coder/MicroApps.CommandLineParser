@@ -27,6 +27,7 @@ type ExecuteVerbFunc = ExecuteVerbContext -> Async<CommandLineExecuteResult>
 
 type GroupDesc =
     { desc: ElementDesc
+      showSummary: bool
       usages: string list
       showDefaultUsage: bool
       flags: FlagDesc list
@@ -199,6 +200,7 @@ module Metadata =
 
     let group: GroupDesc =
         { desc = elementDesc
+          showSummary = true
           usages = []
           showDefaultUsage = false
           flags = []
@@ -220,6 +222,9 @@ module Metadata =
               desc =
                   { d.desc with
                         description = description } }
+
+    let hideSummary d =
+        { d with showSummary = false }
 
     let withUsage usage d =
         { d with usages = d.usages @ [ usage ] }

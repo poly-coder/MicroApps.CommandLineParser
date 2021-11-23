@@ -11,14 +11,6 @@ type RollForwardSetting =
     | LatestMajor = 5
     | Disable = 6
 
-type IrisRepo() =
-    member this.Clone() = ()
-
-type IrisCLI() =
-    class
-    end
-
-
 open Metadata
 
 module DotNet =
@@ -75,10 +67,13 @@ module DotNet =
                 "Filters templates based on language and specifies the language of the template to create."
             |> withLongOption "lang"
 
-        let execute context =
+        let execute (context: ExecuteVerbContext) =
             async {
                 writelnC green "RUNNING DOTNET NEW"
-                return { exitCode = 1 }
+                context.valueMap
+                |> Seq.iter (fun pair ->
+                    writelnC cyan $"  %s{pair.Key} => %O{pair.Value}")
+                return { exitCode = 0 }
             }
 
         let verb =
@@ -87,6 +82,7 @@ module DotNet =
             |> withGroup (
                 group
                 |> withGroupSummary "Create a new .NET project or file."
+                |> withDefaultUsage
                 |> withFlag listFlag
                 |> withFlag interactiveFlag
                 |> withFlag dryRunFlag
@@ -145,15 +141,21 @@ module DotNet =
         |> withFlag infoFlag
         |> withFlag listRuntimesFlag
         |> withFlag listSdksFlag
+        |> withVerb New.verb
+
+    let globalGroup =
+        group
+        |> withGroupName "Global"
+        |> hideSummary
         |> withHelpFlag
         |> withDetailedHelpFlag
         |> withVersionFlag
-        |> withVerb New.verb
 
     let verb =
         verb "dotnet"
         |> withGroup runtimeGroup
         |> withGroup sdkGroup
+        |> withGroup globalGroup
 
     let metadata = create "6.0.100" verb
 
