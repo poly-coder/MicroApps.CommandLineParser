@@ -5,8 +5,6 @@ open System.Reflection
 open System.Text.RegularExpressions
 open Preamble
 
-open Metadata
-
 [<AttributeUsage(AttributeTargets.Class
                  ||| AttributeTargets.Property,
                  AllowMultiple = false,
@@ -220,6 +218,19 @@ type AlternativeShortFormsAttribute([<ParamArray>] shortForms: char []) =
         |> Seq.collect (fun attr -> attr.AlternativeShortForms)
         |> Seq.toList
 
+[<AttributeUsage(AttributeTargets.Class, AllowMultiple = false, Inherited = true)>]
+type ArgumentAttribute() =
+    inherit Attribute()
+
+    static member TryGetAttribute(source: ICustomAttributeProvider) =
+        source.GetCustomAttributes(true)
+        |> Seq.ofType<ArgumentAttribute>
+        |> Seq.tryHead
+
+    static member IsArgument(source: ICustomAttributeProvider) =
+        ArgumentAttribute.TryGetAttribute(source)
+        |> Option.isSome
+
 [<AttributeUsage(AttributeTargets.Class, AllowMultiple = true, Inherited = true)>]
 type SubCommandsAttribute([<ParamArray>] subCommands: Type []) =
     inherit Attribute()
@@ -265,159 +276,3 @@ type OptionGroupAttribute() =
     static member IsOptionGroup(source: ICustomAttributeProvider) =
         OptionGroupAttribute.TryGetAttribute(source)
         |> Option.isSome
-
-type ICommandLineExecute =
-    abstract Execute: unit -> Async<int>
-
-type ReflectionMetadataProvider(mainVerbType: Type, version: string) =
-
-    let mutable metadata: CommandLineMetadata option = None
-
-    let createFlagFromProperty (property: PropertyInfo) =
-        let setKey =
-            OptionKeyAttribute.TryGetOptionKey property
-            |> function
-                | Some key -> withFlagKey key
-                | _ -> id
-
-        let setLongForms flag =
-            AlternativeLongFormsAttribute.GetAlternativeLongForms property
-            |> Seq.fold (fun acc form -> withLongFlag form acc) flag
-
-        let setShortForms flag =
-            AlternativeShortFormsAttribute.GetAlternativeShortForms property
-            |> Seq.fold (fun acc form -> withShortFlag form acc) flag
-
-        longFlag
-            (LongFormAttribute.GetLongForm property)
-            (SummaryAttribute.GetSummary property)
-        |> withFlagName (NameAttribute.GetName property)
-        |> withFlagDescription (DescriptionAttribute.GetDescription property)
-        |> setKey
-        |> setLongForms
-        |> setShortForms
-
-    let createGroupFromClass (optionsClass: Type) =
-        let setDefaultUsage =
-            if DefaultUsageAttribute.ShowDefaultUsage optionsClass then
-                withDefaultUsage
-            else
-                id
-
-        let setHideSummary =
-            if HideSummaryAttribute.HideSummary optionsClass then
-                hideSummary
-            else
-                id
-
-        let setUsages group =
-            UsageAttribute.GetUsages optionsClass
-            |> Seq.fold (fun acc usage -> withUsage usage acc) group
-
-        let setExamples group =
-            ExampleAttribute.GetExamples optionsClass
-            |> Seq.fold (fun acc usage -> withExample usage acc) group
-
-        let setFlags group =
-            optionsClass.GetProperties(BindingFlags.Public ||| BindingFlags.Instance)
-            |> Seq.filter (fun prop ->
-                prop.PropertyType = typeof<bool> &&
-                prop.GetIndexParameters().Length = 0)
-            |> Seq.map createFlagFromProperty
-            |> Seq.fold (fun acc flag -> withFlag flag acc) group
-
-        group
-        |> withGroupName (NameAttribute.GetName optionsClass)
-        |> withGroupSummary (SummaryAttribute.GetSummary optionsClass)
-        |> withGroupDescription (DescriptionAttribute.GetDescription optionsClass)
-        |> setHideSummary
-        |> setDefaultUsage
-        |> setUsages
-        |> setExamples
-        |> setFlags
-
-
-    let addVerbGroups (verbClass: Type) =
-        let constructors =
-            verbClass.GetConstructors(BindingFlags.Public ||| BindingFlags.Instance)
-
-        if constructors.Length = 0 then
-            failwith $"Type %s{verbClass.Name} has no public instance constructor"
-
-        fun verbDesc ->
-            constructors
-            |> Seq.map (fun c -> c.GetParameters())
-            |> Seq.maxBy (fun ps -> ps.Length)
-            |> Seq.collect
-                (fun parameter ->
-                    if OptionGroupAttribute.IsOptionGroup parameter then
-                        [ parameter.ParameterType ]
-                    else
-                        [])
-            |> Seq.map createGroupFromClass
-            |> Seq.fold (fun acc group -> acc |> withGroup group) verbDesc
-
-    let activateCommandLineExecute (classType: Type) (services: IServiceProvider) (valueMap: Map<string, obj>) =
-        let instance = Activator.CreateInstance(classType)
-        instance :?> ICommandLineExecute
-
-    let getVerbKeyFromClass (verbClass: Type) =
-        OptionKeyAttribute.TryGetOptionKey verbClass
-        |> Option.defaultValue verbClass.Name
-
-    let getExecuteFromClass (verbClass: Type) =
-        if typeof<ICommandLineExecute>.IsAssignableFrom verbClass then
-            let execute (context: ExecuteVerbContext) =
-                async {
-                    let instance =
-                        activateCommandLineExecute verbClass context.services context.valueMap
-
-                    let! exitCode = instance.Execute()
-
-                    return { exitCode = exitCode }
-                }
-
-            Some execute
-        else
-            None
-
-    let addVerbExecute (verbClass: Type) =
-        match getExecuteFromClass verbClass with
-        | Some execute -> withExecute execute
-        | None -> id
-
-    let createVerbFromClass isRoot (verbClass: Type) =
-        let addGlobalGroup (verbClass: Type) =
-            if isRoot then
-                withGroup (
-                    group
-                    |> withGroupName "Global"
-                    |> hideSummary
-                    |> withHelpFlag
-                    |> withDetailedHelpFlag
-                    |> withVersionFlag
-                )
-            else
-                id
-
-        getVerbKeyFromClass verbClass
-        |> verb
-        |> addVerbGroups verbClass
-        |> addVerbExecute verbClass
-        |> addGlobalGroup verbClass
-
-    let createMetadata () =
-        let verbDesc = createVerbFromClass true mainVerbType
-        create version verbDesc
-
-    interface ICommandLineMetadataProvider with
-        member this.GetMetadata() =
-            let getOrCreate () =
-                match metadata with
-                | Some metadata -> metadata
-                | None ->
-                    let value = createMetadata ()
-                    metadata <- Some value
-                    value
-
-            async { return getOrCreate () }

@@ -298,7 +298,11 @@ module Metadata =
           defaultValue = None
           reader = reader }
 
-    let withKeyOption key f : OptionDesc = { f with key = key }
+    let withOptionName name f : OptionDesc = { f with desc = f.desc |> withName name }
+    let withOptionSummary summary f : OptionDesc = { f with desc = f.desc |> withSummary summary }
+    let withOptionDescription description f : OptionDesc = { f with desc = f.desc |> withDescription description }
+
+    let withOptionKey key f : OptionDesc = { f with key = key }
 
     let asRequiredOption d : OptionDesc = { d with isRequired = true }
 

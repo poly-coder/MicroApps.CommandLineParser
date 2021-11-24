@@ -179,7 +179,7 @@ module DotNetRefl =
 
         [<Summary("Path to <application>.deps.json file.")>]
         [<TypeName("path")>]
-        depsFile: string list
+        depsFile: string option
 
         [<Summary("Version of the installed Shared Framework to use to run the application.")>]
         [<TypeName("version")>]
@@ -204,6 +204,7 @@ module DotNetRefl =
         [<Summary("Display the installed SDKs.")>]
         listSdks: bool
     }
+
     module NewVerb =
     
         [<Name("DotNet SDK")>]
@@ -226,22 +227,22 @@ module DotNetRefl =
 
             [<Summary("The name for the output being created. If no name is specified, the name of the output directory is used.")>]
             [<AlternativeShortForms('n')>]
-            name: string
+            name: string option
 
             [<Summary("Location to place the generated output.")>]
             [<AlternativeShortForms('o')>]
             [<TypeName("folder")>]
-            output: string
+            output: string option
 
             [<Summary("Installs a source or a template package.")>]
             [<AlternativeShortForms('i')>]
             [<TypeName("folder|nuget-id")>]
-            install: string
+            install: string option
 
             [<Summary("Installs a source or a template package.")>]
             [<AlternativeShortForms('u')>]
             [<TypeName("folder|nuget-id")>]
-            uninstall: string
+            uninstall: string option
 
             [<Summary("Specifies a NuGet source to use during install.")>]
             [<AlternativeLongForms("nuget-source")>]
@@ -251,12 +252,12 @@ module DotNetRefl =
             [<Summary("""Filters templates based on available types. Predefined values are "project" and "item".""")>]
             [<LongForm("type")>]
             [<TypeName("type")>]
-            type': string
+            type': string option
 
             [<Summary("Filters templates based on language and specifies the language of the template to create.")>]
             [<AlternativeLongForms("lang")>]
             [<TypeName("lang")>]
-            language: string
+            language: string option
         }
 
         [<OptionKey("new")>]
