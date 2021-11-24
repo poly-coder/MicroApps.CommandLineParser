@@ -262,7 +262,11 @@ module Metadata =
           shortForms = []
           longForms = [ longForm ] }
 
-    let withKeyFlag key f : FlagDesc = { f with key = key }
+    let withFlagName name f : FlagDesc = { f with desc = f.desc |> withName name }
+    let withFlagSummary summary f : FlagDesc = { f with desc = f.desc |> withSummary summary }
+    let withFlagDescription description f : FlagDesc = { f with desc = f.desc |> withDescription description }
+
+    let withFlagKey key f : FlagDesc = { f with key = key }
 
     let withLongFlag longForm f : FlagDesc =
         { f with
