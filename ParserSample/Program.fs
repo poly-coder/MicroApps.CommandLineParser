@@ -279,7 +279,14 @@ module DotNetRefl =
 
         interface ICommandLineExecute with
                 member this.Execute() = async {
-                    writelnC cyan "dotnet executed"
+                    if sdkOptions.diagnostics then
+                        writeln"Diagnostics turned on"
+                    if sdkOptions.info then
+                        writelnC cyan "dotnet --info requested"
+                    if sdkOptions.listRuntimes then
+                        writelnC cyan "dotnet --list-runtimes requested"
+                    if sdkOptions.listSdks then
+                        writelnC cyan "dotnet --list-sdks requested"
                     return 0
                 }
 

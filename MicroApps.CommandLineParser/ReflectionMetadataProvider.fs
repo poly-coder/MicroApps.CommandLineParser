@@ -3,8 +3,8 @@
 open System
 open System.Reflection
 open System.Text.RegularExpressions
+open FSharp.Reflection
 open Preamble
-
 open Metadata
 
 type ICommandLineExecute =
@@ -72,25 +72,25 @@ type ReflectionMetadataProvider(mainVerbType: Type, version: string) =
 
     let rec getReaderForBaseType (propertyType: Type) =
         match simpleTypeReaders.TryGetValue propertyType with
-        | true, reader -> reader, true, false
+        | true, reader -> reader, true, false, propertyType
         | false, _ ->
             if propertyType.IsGenericType then
                 let definition = propertyType.GetGenericTypeDefinition()
                 if List.contains definition listDefinitionTypes then
                     let baseType = propertyType.GetGenericArguments().[0]
-                    let reader, _, _ = getReaderForBaseType baseType
-                    reader, false, true
+                    let reader, _, _, underlyingType = getReaderForBaseType baseType
+                    reader, false, true, underlyingType
                 elif List.contains definition optionalDefinitionTypes then
                     let baseType = propertyType.GetGenericArguments().[0]
-                    let reader, _, _ = getReaderForBaseType baseType
-                    reader, false, false
+                    let reader, _, _, underlyingType = getReaderForBaseType baseType
+                    reader, false, false, underlyingType
                 else
                     failwith $"Unsupported type definition for reader: %A{definition}"
             else
                 failwith $"Unsupported type for reader: %A{propertyType}"
                     
     let getReaderForProperty (property: PropertyInfo) =
-        let baseReader, isRequired, isMultiValued =
+        let baseReader, isRequired, isMultiValued, underlyingType =
             getReaderForBaseType property.PropertyType
 
         let reader =
@@ -108,7 +108,7 @@ type ReflectionMetadataProvider(mainVerbType: Type, version: string) =
                 | Some x -> failwith $"Property %s{property.Name} is marked as multi-valued but it's type does not allow for it"
                 | None -> None
 
-        reader, isRequired, multiValued
+        reader, isRequired, multiValued, underlyingType
 
     let createOptionFromProperty (property: PropertyInfo) =
         let setKey =
@@ -125,7 +125,7 @@ type ReflectionMetadataProvider(mainVerbType: Type, version: string) =
             AlternativeShortFormsAttribute.GetAlternativeShortForms property
             |> Seq.fold (fun acc form -> withShortOption form acc) option
 
-        let reader, isRequired, multiValued =
+        let reader, isRequired, multiValued, _ =
             getReaderForProperty property
 
         let setIsRequired = if isRequired then asRequiredOption else id
@@ -144,6 +144,20 @@ type ReflectionMetadataProvider(mainVerbType: Type, version: string) =
         |> setMultiValued
         |> setLongForms
         |> setShortForms
+
+    let isFlagProperty (property: PropertyInfo) =
+        property.PropertyType = typeof<bool> &&
+        property.GetIndexParameters().Length = 0
+
+    let isArgumentProperty (property: PropertyInfo) =
+        property.PropertyType <> typeof<bool> &&
+        ArgumentAttribute.IsArgument property &&
+        property.GetIndexParameters().Length = 0
+
+    let isOptionProperty (property: PropertyInfo) =
+        property.PropertyType <> typeof<bool> &&
+        isArgumentProperty property &&
+        property.GetIndexParameters().Length = 0
 
     let createGroupFromClass (optionsClass: Type) =
         let setDefaultUsage =
@@ -168,18 +182,13 @@ type ReflectionMetadataProvider(mainVerbType: Type, version: string) =
 
         let setFlags group =
             optionsClass.GetProperties(BindingFlags.Public ||| BindingFlags.Instance)
-            |> Seq.filter (fun prop ->
-                prop.PropertyType = typeof<bool> &&
-                prop.GetIndexParameters().Length = 0)
+            |> Seq.filter isFlagProperty
             |> Seq.map createFlagFromProperty
             |> Seq.fold (fun acc flag -> withFlag flag acc) group
 
         let setOptions group =
             optionsClass.GetProperties(BindingFlags.Public ||| BindingFlags.Instance)
-            |> Seq.filter (fun prop ->
-                prop.PropertyType <> typeof<bool> &&
-                not(ArgumentAttribute.IsArgument prop) &&
-                prop.GetIndexParameters().Length = 0)
+            |> Seq.filter isOptionProperty
             |> Seq.map createOptionFromProperty
             |> Seq.fold (fun acc opt -> withOption opt acc) group
 
@@ -194,29 +203,94 @@ type ReflectionMetadataProvider(mainVerbType: Type, version: string) =
         |> setFlags
         |> setOptions
 
-
-    let addVerbGroups (verbClass: Type) =
+    let getLongestConstructor (verbClass: Type) =
         let constructors =
             verbClass.GetConstructors(BindingFlags.Public ||| BindingFlags.Instance)
 
         if constructors.Length = 0 then
             failwith $"Type %s{verbClass.Name} has no public instance constructor"
 
-        fun verbDesc ->
-            constructors
-            |> Seq.map (fun c -> c.GetParameters())
-            |> Seq.maxBy (fun ps -> ps.Length)
-            |> Seq.collect
-                (fun parameter ->
-                    if OptionGroupAttribute.IsOptionGroup parameter then
-                        [ parameter.ParameterType ]
-                    else
-                        [])
-            |> Seq.map createGroupFromClass
-            |> Seq.fold (fun acc group -> acc |> withGroup group) verbDesc
+        constructors
+        |> Seq.map (fun c -> c, c.GetParameters())
+        |> Seq.maxBy (fun (c, ps) -> ps.Length)
+
+    let addVerbGroups (verbClass: Type) verbDesc =
+        getLongestConstructor verbClass
+        |> snd
+        |> Seq.collect
+            (fun parameter ->
+                if OptionGroupAttribute.IsOptionGroup parameter then
+                    [ parameter.ParameterType ]
+                else
+                    [])
+        |> Seq.map createGroupFromClass
+        |> Seq.fold (fun acc group -> acc |> withGroup group) verbDesc
+
+    let listOfSeqMethod =
+        match <@ List.ofSeq [1] @> with
+        | Quotations.Patterns.Call(_, ofSeqInt, _) -> ofSeqInt
+        | _ -> failwith "Unexpected"
+        |> fun ofSeqInt -> ofSeqInt.GetGenericMethodDefinition()
+
+    let listGetEmptyMethod =
+        match <@ List.empty<int> @> with
+        | Quotations.Patterns.Call(_, getEmpty, _) -> getEmpty
+        | _ -> failwith "Unexpected"
+        |> fun getEmpty -> getEmpty.GetGenericMethodDefinition()
+
+    let createOptionsObject parameterType (valueMap: Map<string, obj>) =
+        if FSharpType.IsRecord parameterType then
+            let bindingFlags = BindingFlags.Public ||| BindingFlags.Instance
+            FSharpType.GetRecordFields(parameterType, bindingFlags)
+            |> Seq.map (fun property ->
+                let key = OptionKeyAttribute.GetOptionKey property
+
+                if isFlagProperty property then
+                    match valueMap |> Map.tryFind key with
+                    | Some value ->
+                        value
+                    | None -> false
+                elif isOptionProperty property then
+                    let _, isOptional, multiValued, underlyingType = getReaderForProperty property
+                    match valueMap |> Map.tryFind key with
+                    | Some value ->
+                        if isOptional then
+                            (Some value) :> obj
+                        elif multiValued |> Option.isSome then
+                            value
+                        else
+                            value :?> obj list
+                            |> (fun ls ->
+                                let ofSeq = listOfSeqMethod.MakeGenericMethod(underlyingType)
+                                ofSeq.Invoke(null, [| ls |]))
+                    | None ->
+                        if isOptional then
+                            None :> obj
+                        elif multiValued |> Option.isSome then
+                            let getEmpty = listGetEmptyMethod.MakeGenericMethod(underlyingType)
+                            getEmpty.Invoke(null, Array.empty)
+                        else
+                            null
+                else null
+            )
+            |> Seq.toArray
+            |> fun values -> FSharpValue.MakeRecord(parameterType, values, bindingFlags)
+        else
+            failwith $"Cannot create options for type %A{parameterType}"
 
     let activateCommandLineExecute (classType: Type) (services: IServiceProvider) (valueMap: Map<string, obj>) =
-        let instance = Activator.CreateInstance(classType)
+        let args =
+            getLongestConstructor classType
+            |> snd
+            |> Seq.map
+                (fun parameter ->
+                    if OptionGroupAttribute.IsOptionGroup parameter then
+                        createOptionsObject parameter.ParameterType valueMap
+                    else
+                        services.GetService(parameter.ParameterType))
+            |> Seq.toArray
+            
+        let instance = Activator.CreateInstance(classType, args)
         instance :?> ICommandLineExecute
 
     let getVerbKeyFromClass (verbClass: Type) =

@@ -264,6 +264,11 @@ type OptionKeyAttribute(optionKey: string) =
         OptionKeyAttribute.TryGetAttribute(source)
         |> Option.map (fun attr -> attr.OptionKey)
 
+    static member GetOptionKey(property: PropertyInfo) =
+        OptionKeyAttribute.TryGetOptionKey(property)
+        |> Option.defaultWith (fun () ->
+            LongFormAttribute.GetLongForm property)
+
 [<AttributeUsage(AttributeTargets.Parameter, AllowMultiple = false, Inherited = true)>]
 type OptionGroupAttribute() =
     inherit Attribute()
